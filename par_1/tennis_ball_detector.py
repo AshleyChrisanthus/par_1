@@ -6,6 +6,7 @@ from sensor_msgs.msg import Image, LaserScan
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PointStamped
 import tf2_ros
+import tf2_geometry_msgs  # Add this import
 import cv2
 from cv_bridge import CvBridge
 import numpy as np
@@ -98,8 +99,14 @@ class TennisBallDetectorOpenCV(Node):
 
     def transform_and_publish(self, point_lidar):
         try:
-            if self.tf_buffer.can_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)):
-                point_map = self.tf_buffer.transform(point_lidar, 'map', timeout=rclpy.duration.Duration(seconds=0.1))
+            # Use proper timeout handling
+            timeout = rclpy.duration.Duration(seconds=0.1)
+            if self.tf_buffer.can_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout):
+                # Use tf2_geometry_msgs for proper PointStamped transformation
+                point_map = tf2_geometry_msgs.do_transform_point(
+                    point_lidar,
+                    self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout)
+                )
 
                 if not self.seen:
                     self.publish_marker(point_map)
