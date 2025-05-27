@@ -17,7 +17,7 @@ class TreeAvoidanceController(Node):
     """
     
     def __init__(self):
-        super().__init__('tree_avoidance_controller')
+        super().__init__('tree_avoidance')
         
         # Publishers
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
