@@ -44,6 +44,7 @@ class BasicNavigation(Node):
         self.emergency_distance = 0.15   # 15cm - STOP AND TURN
         self.danger_distance = 0.25      # 25cm - CRAWL FORWARD
         self.caution_distance = 0.40     # 40cm - SLOW FORWARD
+        self.tree_avoidance_distance = 0.10  # 10cm - TURN AWAY FROM TREES
         
         # LiDAR scanning
         self.scan_data = None
@@ -67,10 +68,11 @@ class BasicNavigation(Node):
         self.navigation_timer = self.create_timer(0.1, self.navigation_loop)
         
         self.get_logger().info('Safe Proximity Navigation initialized!')
-        # self.get_logger().info('Slow speed: Normal=15cm/s, Slow=8cm/s, Crawl=3cm/s')
-        # self.get_logger().info('Emergency: 15cm | DANGER: 25cm | CAUTION: 40cm')
-        self.publish_status("Safe navigation ready - slow and steady")
-        
+        # self.get_logger().info('SLOW SPEEDS: Normal=15cm/s, Slow=8cm/s, Crawl=3cm/s')
+        # self.get_logger().info('⚠️  EMERGENCY: 15cm | DANGER: 25cm | CAUTION: 40cm')
+        # self.get_logger().info('🌳 TREE AVOIDANCE: 10cm - Will turn away from trees!')
+        self.publish_status("Basic navigation ready - will avoid trees at 10cm")
+
     def publish_status(self, message):
         """Publish navigation status."""
         status_msg = String()
@@ -136,7 +138,7 @@ class BasicNavigation(Node):
         self.cmd_pub.publish(twist)
         
         self.emergency_stops += 1
-        self.get_logger().warn(f'Emergency Stopping #{self.emergency_stops}! Obstacle at {self.closest_front_distance*100:.1f}cm')
+        self.get_logger().warn(f'Emergency Stop #{self.emergency_stops}! Obstacle at {self.closest_front_distance*100:.1f}cm')
         
         # Start avoidance immediately
         if not self.in_avoidance_mode:
@@ -148,8 +150,8 @@ class BasicNavigation(Node):
         self.avoidance_start_time = time.time()
         self.close_calls += 1
         
-        self.get_logger().warn(f'Emergency Avoidance #{self.close_calls}! Distance: {self.closest_front_distance*100:.1f}cm')
-        self.publish_status(f"Emergency Avoidance - {self.closest_front_distance*100:.1f}cm")
+        self.get_logger().warn(f'Tree Avoidance #{self.close_calls}! Distance: {self.closest_front_distance*100:.1f}cm')
+        self.publish_status(f"Tree Avoidance - {self.closest_front_distance*100:.1f}cm")
     
     def navigation_loop(self):
         """Main navigation loop - runs at 10Hz for responsiveness."""
@@ -185,10 +187,14 @@ class BasicNavigation(Node):
                     self.get_logger().warn('Still too close, extending avoidance')
                     return
         
-        # Normal navigation based on distance and tree detection
+        # Navigation based on distance and tree detection
         if distance <= self.emergency_distance:
-            # EMERGENCY: Stop and avoid
+            # EMERGENCY: Stop and turn away immediately
             self.emergency_stop()
+            
+        elif distance <= 0.10 and self.trees_currently_detected:
+            # TREE TOO CLOSE (10cm): Turn away from tree
+            self.turn_away_from_tree()
             
         elif distance <= self.danger_distance:
             # DANGER: Crawl forward very slowly
@@ -213,33 +219,43 @@ class BasicNavigation(Node):
         twist.angular.z = self.turn_speed  # Turn right
         self.cmd_pub.publish(twist)
         
+    def turn_away_from_tree(self):
+        """Turn away when tree is within 10cm."""
+        twist = Twist()
+        twist.linear.x = 0.0  # Stop moving forward
+        twist.angular.z = self.turn_speed  # Turn away from tree
+        self.cmd_pub.publish(twist)
+        
+        self.get_logger().warn(f'Turning Away! Tree at {self.closest_front_distance*100:.1f}cm (within 10cm limit)')
+        self.publish_status(f"Turning Away - Tree at {self.closest_front_distance*100:.1f}cm")
+        
     def crawl_forward(self):
         """Move forward very slowly."""
         twist = Twist()
         twist.linear.x = self.crawl_speed
         twist.angular.z = 0.0
         self.cmd_pub.publish(twist)
-        
-        self.publish_status(f"CRAWLING - {self.closest_front_distance*100:.1f}cm ahead")
-        
+
+        self.publish_status(f"Crawling - {self.closest_front_distance*100:.1f}cm ahead")
+
     def slow_forward(self):
         """Move forward slowly."""
         twist = Twist()
         twist.linear.x = self.slow_speed
         twist.angular.z = 0.0
         self.cmd_pub.publish(twist)
-        
-        self.publish_status(f"SLOW - Trees detected, {self.closest_front_distance*100:.1f}cm ahead")
-        
+
+        self.publish_status(f"Slow - Trees detected, {self.closest_front_distance*100:.1f}cm ahead")
+
     def cautious_forward(self):
         """Move forward cautiously."""
         twist = Twist()
         twist.linear.x = self.normal_speed * 0.6  # 60% of normal speed
         twist.angular.z = 0.0
         self.cmd_pub.publish(twist)
-        
-        self.publish_status(f"CAUTIOUS - Trees nearby, {self.closest_front_distance*100:.1f}cm clear")
-        
+
+        self.publish_status(f"Cautious - Trees nearby, {self.closest_front_distance*100:.1f}cm clear")
+
     def normal_forward(self):
         """Normal forward movement."""
         twist = Twist()
@@ -248,21 +264,21 @@ class BasicNavigation(Node):
         self.cmd_pub.publish(twist)
         
         if self.closest_front_distance < float('inf'):
-            self.publish_status(f"NORMAL - Path clear, {self.closest_front_distance*100:.1f}cm ahead")
+            self.publish_status(f"Normal - Path clear, {self.closest_front_distance*100:.1f}cm ahead")
         else:
-            self.publish_status("NORMAL - Clear path ahead")
+            self.publish_status("Normal - Clear path ahead")
 
 def main(args=None):
     rclpy.init(args=args)
     
     try:
         navigator = BasicNavigation()
-        navigator.get_logger().info('Starting SAFE proximity navigation...')
+        navigator.get_logger().info('Starting Basic navigation...')
         # navigator.get_logger().info('Using SLOW speeds to prevent crashes')
         # navigator.get_logger().info('Safety first - better slow than crashed!')
         rclpy.spin(navigator)
     except KeyboardInterrupt:
-        navigator.get_logger().info('Safe navigation shutting down...')
+        navigator.get_logger().info('Basic navigation shutting down...')
     finally:
         if 'navigator' in locals():
             # Ensure robot stops
