@@ -183,7 +183,7 @@ class TreeDetector(Node):
                 aspect_ratio = h / w if w > 0 else 0
                 self.get_logger().info(f'    Tree #{i+1}:')
                 self.get_logger().info(f'    Pixel coordinates: ({int(center_x)}, {int(center_y)})')
-                self.get_logger().info(f'    Size: {w}x{h}px | Aspect ratio: {aspect_ratio:.2f} | Area: {area}px²')
+                # self.get_logger().info(f'    Size: {w}x{h}px | Aspect ratio: {aspect_ratio:.2f} | Area: {area}px²')
                 self.get_logger().info(f'    LiDAR coordinates: ({lidar_x:.2f}, {lidar_y:.2f}) meters')
                 self.get_logger().info(f'    Map coordinates: ({map_x:.2f}, {map_y:.2f}) meters')
                 
@@ -322,9 +322,9 @@ class TreeDetector(Node):
             cv2.putText(debug_img, label, (x, y - 15), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             
-            # Add area information
-            cv2.putText(debug_img, f"{area}px²", (x, y + h + 25), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            # # Add area information
+            # cv2.putText(debug_img, f"{area}px²", (x, y + h + 25), 
+            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         
         # Add status information overlay
         cv2.putText(debug_img, f"🌳 Trees in view: {len(trees)}", (10, 35), 
