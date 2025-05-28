@@ -84,7 +84,7 @@ class TennisBallDetector(Node):
                 other_ball = self.detect_other_colored_balls(cv_image)
                 if other_ball:
                     color_name = other_ball['color']
-                    self.get_logger().info(f'Not a macadamia nut - detected {color_name} ball (ignoring)')
+                    self.get_logger().info(f'Not a macadamia nut - detected (ignoring)')
                 
                 # Log scanning status occasionally
                 elif self.frame_count % 120 == 0:  # Every ~4 seconds
