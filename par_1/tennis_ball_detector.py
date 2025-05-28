@@ -28,7 +28,7 @@ class TennisBallDetectorOpenCV(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self.seen = False
+        self.detected_points = []  # Store detected tennis ball positions
 
         self.get_logger().info('OpenCV Tennis Ball Detector initialized.')
 
@@ -50,7 +50,7 @@ class TennisBallDetectorOpenCV(Node):
         mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
         # Morphology to reduce noise
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
 
         # Find contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -94,27 +94,33 @@ class TennisBallDetectorOpenCV(Node):
         point_lidar.point.y = distance * np.sin(angle)
         point_lidar.point.z = 0.0
 
-        # Transform to map frame and publish marker
+        # Transform to map frame and publish marker if new
         self.transform_and_publish(point_lidar)
+
+    def is_new_ball(self, new_point, threshold=0.3):
+        for point in self.detected_points:
+            dx = new_point.point.x - point.point.x
+            dy = new_point.point.y - point.point.y
+            if np.hypot(dx, dy) < threshold:
+                return False
+        return True
 
     def transform_and_publish(self, point_lidar):
         try:
-            # Use proper timeout handling
             timeout = rclpy.duration.Duration(seconds=0.1)
             if self.tf_buffer.can_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout):
-                # Use tf2_geometry_msgs for proper PointStamped transformation
                 point_map = tf2_geometry_msgs.do_transform_point(
                     point_lidar,
                     self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout)
                 )
 
-                if not self.seen:
+                if self.is_new_ball(point_map):
                     self.publish_marker(point_map)
-                    self.seen = True
-                    self.get_logger().info(f'Tennis ball detected at ({point_map.point.x:.2f}, {point_map.point.y:.2f})')
-
-                    # Trigger home after detection (example)
+                    self.detected_points.append(point_map)
+                    self.get_logger().info(f'New tennis ball detected at ({point_map.point.x:.2f}, {point_map.point.y:.2f})')
                     self.home_trigger_pub.publish(Empty())
+                else:
+                    self.get_logger().info('Previously detected ball. Ignoring.')
             else:
                 self.get_logger().warn('TF transform not ready')
         except Exception as e:
@@ -125,7 +131,7 @@ class TennisBallDetectorOpenCV(Node):
         marker.header.frame_id = 'map'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'tennis_ball'
-        marker.id = 0
+        marker.id = len(self.detected_points)  # Unique ID per ball
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
 
