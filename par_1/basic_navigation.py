@@ -2,16 +2,14 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Float32MultiArray, String
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import LaserScan
-import numpy as np
 import time
 
-class BasicNavigation(Node):
+class BasicNavigationController(Node):
     """
-    Safe proximity-based navigation with reduced speed and immediate obstacle detection.
-    Prioritizes safety over speed to prevent crashes.
+    Basic navigation controller that avoids trees detected by the tree detector.
+    Listens to tree detection data and steers the robot away from obstacles.
     """
     
     def __init__(self):
@@ -28,263 +26,145 @@ class BasicNavigation(Node):
             self.tree_callback,
             10)
         
-        self.scan_sub = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.scan_callback,
-            10)
+        # Navigation parameters
+        self.normal_speed = 0.25       # Normal forward speed (m/s)
+        self.slow_speed = 0.1          # Speed when trees detected but not dangerous
+        self.turn_speed = 0.6          # Angular speed for avoidance turns (rad/s)
         
-        # MUCH SLOWER navigation parameters for safety
-        self.normal_speed = 0.15         # Reduced from 0.3 to 0.15
-        self.slow_speed = 0.08           # Very slow when trees detected
-        self.crawl_speed = 0.03          # Crawling speed when very close
-        self.turn_speed = 0.4            # Turn speed for avoidance
+        # Image parameters (assuming standard camera resolution)
+        self.image_width = 640
+        self.image_center = self.image_width // 2  # Center of image = 320 pixels
+        self.danger_zone_width = 200   # Width of danger zone in pixels (center ±100)
+        self.danger_zone_left = self.image_center - self.danger_zone_width // 2  # 220
+        self.danger_zone_right = self.image_center + self.danger_zone_width // 2  # 420
         
-        # More conservative distance thresholds
-        self.emergency_distance = 0.15   # 15cm - STOP AND TURN
-        self.danger_distance = 0.25      # 25cm - CRAWL FORWARD
-        self.caution_distance = 0.40     # 40cm - SLOW FORWARD
-        self.tree_avoidance_distance = 0.10  # 10cm - TURN AWAY FROM TREES
+        # Tree size thresholds (in pixels)
+        self.close_tree_size = 70      # Tree width/height > 70px = very close
+        self.medium_tree_size = 40     # Tree width/height > 40px = moderately close
         
-        # LiDAR scanning
-        self.scan_data = None
-        self.closest_front_distance = float('inf')
-        
-        # Tree detection state
-        self.trees_currently_detected = False
-        self.last_tree_message_time = 0
-        self.tree_detection_timeout = 0.5  # Consider trees gone after 0.5 seconds
-        
-        # Avoidance state
-        self.in_avoidance_mode = False
+        # State management
+        self.avoiding_obstacle = False
         self.avoidance_start_time = 0
-        self.avoidance_duration = 2.0
+        self.avoidance_duration = 2.5  # Seconds to turn when avoiding
         
-        # Safety counters
-        self.emergency_stops = 0
-        self.close_calls = 0
+        # Statistics
+        self.avoidance_count = 0
+        self.last_tree_detection_time = 0
         
-        # High-frequency navigation timer (10Hz for responsiveness)
-        self.navigation_timer = self.create_timer(0.1, self.navigation_loop)
+        # Timer for regular forward movement when no trees detected
+        self.movement_timer = self.create_timer(0.1, self.regular_movement_check)
         
-        self.get_logger().info('Safe Proximity Navigation initialized!')
-        # self.get_logger().info('SLOW SPEEDS: Normal=15cm/s, Slow=8cm/s, Crawl=3cm/s')
-        # self.get_logger().info('⚠️  EMERGENCY: 15cm | DANGER: 25cm | CAUTION: 40cm')
-        # self.get_logger().info('🌳 TREE AVOIDANCE: 10cm - Will turn away from trees!')
-        self.publish_status("Basic navigation ready - will avoid trees at 10cm")
-
+        self.get_logger().info('Basic Navigation Controller initialized!')
+        self.get_logger().info('Listening for tree detections and ready to navigate...')
+        self.get_logger().info(f'Danger zone: pixels {self.danger_zone_left} to {self.danger_zone_right} (center {self.image_center})')
+        self.publish_status("Navigation ready - moving forward until trees detected")
+        
     def publish_status(self, message):
         """Publish navigation status."""
         status_msg = String()
         status_msg.data = message
         self.status_pub.publish(status_msg)
         
-    def scan_callback(self, msg):
-        """Process LiDAR scan for immediate obstacle detection."""
-        self.scan_data = msg
-        self.update_front_distance()
-        
-        # IMMEDIATE safety check - if something very close, stop now!
-        if self.closest_front_distance <= self.emergency_distance:
-            self.emergency_stop()
-    
-    def update_front_distance(self):
-        """Update closest obstacle distance in front of robot."""
-        if self.scan_data is None:
-            return
-            
-        # Check front 90 degrees (±45°) for obstacles
-        ranges = self.scan_data.ranges
-        total_ranges = len(ranges)
-        
-        # Calculate front indices (wider scan for safety)
-        center_idx = total_ranges // 2
-        front_span = total_ranges // 4  # ±45 degrees
-        start_idx = max(0, center_idx - front_span)
-        end_idx = min(total_ranges, center_idx + front_span)
-        
-        # Find minimum valid distance in front area
-        front_ranges = ranges[start_idx:end_idx]
-        valid_distances = []
-        
-        for distance in front_ranges:
-            if (np.isfinite(distance) and 
-                self.scan_data.range_min <= distance <= self.scan_data.range_max):
-                valid_distances.append(distance)
-        
-        if valid_distances:
-            self.closest_front_distance = min(valid_distances)
-        else:
-            self.closest_front_distance = float('inf')
-    
     def tree_callback(self, msg):
-        """Handle tree detection messages."""
-        current_time = time.time()
-        self.last_tree_message_time = current_time
+        """Handle tree detection messages from tree detector."""
+        # Parse the message - format should be "trees_detected:N" 
+        # But your tree_detector publishes position data, so let's handle both
         
-        if "trees_detected:" in msg.data:
-            num_trees = int(msg.data.split(':')[1])
-            self.trees_currently_detected = True
+        current_time = time.time()
+        self.last_tree_detection_time = current_time
+        
+        # Simple parsing - if we get any tree message, trees are detected
+        if "tree" in msg.data.lower():
+            self.get_logger().info(f'Received tree detection: {msg.data}')
             
-            self.get_logger().info(f'TREES: {num_trees} detected | Front distance: {self.closest_front_distance*100:.1f}cm')
-            
-            # If trees detected and very close, immediate avoidance
-            if self.closest_front_distance <= self.emergency_distance:
-                self.start_emergency_avoidance()
-    
-    def emergency_stop(self):
-        """Immediate emergency stop."""
-        twist = Twist()  # All zeros = stop
+            # For now, assume any tree detection means we should be cautious
+            # In the future, you could parse the actual positions from the message
+            self.handle_tree_detection(msg.data)
+        
+    def handle_tree_detection(self, tree_data):
+        """Process tree detection and decide on navigation action."""
+        
+        # Simple logic: if trees are detected, start avoidance
+        if not self.avoiding_obstacle:
+            self.get_logger().warn('🚨 TREES DETECTED - Starting avoidance maneuver!')
+            self.start_avoidance_maneuver()
+        
+    def start_avoidance_maneuver(self):
+        """Begin obstacle avoidance procedure."""
+        self.avoiding_obstacle = True
+        self.avoidance_start_time = time.time()
+        self.avoidance_count += 1
+        
+        self.get_logger().info(f'🔄 AVOIDANCE #{self.avoidance_count} - Turning right to avoid trees')
+        self.publish_status(f"AVOIDING TREES - Maneuver #{self.avoidance_count}")
+        
+        # Immediately start turning
+        self.execute_avoidance_turn()
+        
+    def execute_avoidance_turn(self):
+        """Execute the avoidance turn."""
+        twist = Twist()
+        twist.linear.x = 0.05          # Very slow forward motion while turning
+        twist.angular.z = self.turn_speed  # Turn right (positive = left, negative = right)
         self.cmd_pub.publish(twist)
         
-        self.emergency_stops += 1
-        self.get_logger().warn(f'Emergency Stop #{self.emergency_stops}! Obstacle at {self.closest_front_distance*100:.1f}cm')
-        
-        # Start avoidance immediately
-        if not self.in_avoidance_mode:
-            self.start_emergency_avoidance()
-    
-    def start_emergency_avoidance(self):
-        """Start emergency avoidance maneuver."""
-        self.in_avoidance_mode = True
-        self.avoidance_start_time = time.time()
-        self.close_calls += 1
-        
-        self.get_logger().warn(f'Tree Avoidance #{self.close_calls}! Distance: {self.closest_front_distance*100:.1f}cm')
-        self.publish_status(f"Tree Avoidance - {self.closest_front_distance*100:.1f}cm")
-    
-    def navigation_loop(self):
-        """Main navigation loop - runs at 10Hz for responsiveness."""
+    def regular_movement_check(self):
+        """Regular timer callback to handle movement when not actively avoiding."""
         current_time = time.time()
         
-        # Check if tree detection messages are still coming
-        time_since_tree_msg = current_time - self.last_tree_message_time
-        if time_since_tree_msg > self.tree_detection_timeout:
-            self.trees_currently_detected = False
-        
-        # Make navigation decision
-        self.make_safe_navigation_decision()
-        
-    def make_safe_navigation_decision(self):
-        """Make navigation decision prioritizing safety."""
-        current_time = time.time()
-        distance = self.closest_front_distance
-        
-        # Handle avoidance mode
-        if self.in_avoidance_mode:
+        # Check if we're in avoidance mode
+        if self.avoiding_obstacle:
+            # Continue avoidance for the specified duration
             if current_time - self.avoidance_start_time < self.avoidance_duration:
                 self.execute_avoidance_turn()
                 return
             else:
-                # Check if it's safe to resume
-                if distance > self.caution_distance:
-                    self.in_avoidance_mode = False
-                    self.get_logger().info('Avoidance completed - resuming forward motion')
-                    self.publish_status("Avoidance completed")
-                else:
-                    # Still too close, extend avoidance
-                    self.avoidance_start_time = current_time
-                    self.get_logger().warn('Still too close, extending avoidance')
-                    return
+                # Avoidance complete
+                self.avoiding_obstacle = False
+                self.get_logger().info('✅ Avoidance maneuver completed - resuming forward motion')
+                self.publish_status("Avoidance completed - moving forward")
         
-        # Navigation based on distance and tree detection
-        if distance <= self.emergency_distance:
-            # EMERGENCY: Stop and turn away immediately
-            self.emergency_stop()
-            
-        elif distance <= 0.10 and self.trees_currently_detected:
-            # TREE TOO CLOSE (10cm): Turn away from tree
-            self.turn_away_from_tree()
-            
-        elif distance <= self.danger_distance:
-            # DANGER: Crawl forward very slowly
-            self.crawl_forward()
-            
-        elif distance <= self.caution_distance and self.trees_currently_detected:
-            # CAUTION: Slow forward with trees nearby
-            self.slow_forward()
-            
-        elif self.trees_currently_detected:
-            # AWARE: Trees detected but not too close
-            self.cautious_forward()
-            
-        else:
-            # NORMAL: Path seems clear
-            self.normal_forward()
-    
-    def execute_avoidance_turn(self):
-        """Execute avoidance turn maneuver."""
-        twist = Twist()
-        twist.linear.x = 0.0  # Stop forward motion
-        twist.angular.z = self.turn_speed  # Turn right
-        self.cmd_pub.publish(twist)
+        # Normal forward movement
+        # Check if we've received tree detections recently
+        time_since_last_detection = current_time - self.last_tree_detection_time
         
-    def turn_away_from_tree(self):
-        """Turn away when tree is within 10cm."""
-        twist = Twist()
-        twist.linear.x = 0.0  # Stop moving forward
-        twist.angular.z = self.turn_speed  # Turn away from tree
-        self.cmd_pub.publish(twist)
-        
-        self.get_logger().warn(f'Turning Away! Tree at {self.closest_front_distance*100:.1f}cm (within 10cm limit)')
-        self.publish_status(f"Turning Away - Tree at {self.closest_front_distance*100:.1f}cm")
-        
-    def crawl_forward(self):
-        """Move forward very slowly."""
-        twist = Twist()
-        twist.linear.x = self.crawl_speed
-        twist.angular.z = 0.0
-        self.cmd_pub.publish(twist)
-
-        self.publish_status(f"Crawling - {self.closest_front_distance*100:.1f}cm ahead")
-
-    def slow_forward(self):
-        """Move forward slowly."""
-        twist = Twist()
-        twist.linear.x = self.slow_speed
-        twist.angular.z = 0.0
-        self.cmd_pub.publish(twist)
-
-        self.publish_status(f"Slow - Trees detected, {self.closest_front_distance*100:.1f}cm ahead")
-
-    def cautious_forward(self):
-        """Move forward cautiously."""
-        twist = Twist()
-        twist.linear.x = self.normal_speed * 0.6  # 60% of normal speed
-        twist.angular.z = 0.0
-        self.cmd_pub.publish(twist)
-
-        self.publish_status(f"Cautious - Trees nearby, {self.closest_front_distance*100:.1f}cm clear")
-
-    def normal_forward(self):
-        """Normal forward movement."""
-        twist = Twist()
-        twist.linear.x = self.normal_speed
-        twist.angular.z = 0.0
-        self.cmd_pub.publish(twist)
-        
-        if self.closest_front_distance < float('inf'):
-            self.publish_status(f"Normal - Path clear, {self.closest_front_distance*100:.1f}cm ahead")
-        else:
-            self.publish_status("Normal - Clear path ahead")
+        if time_since_last_detection < 1.0:  # Tree detected within last 1 second
+            # Move slowly when trees are nearby
+            twist = Twist()
+            twist.linear.x = self.slow_speed
+            twist.angular.z = 0.0
+            self.cmd_pub.publish(twist)
+            self.publish_status("Trees nearby - moving slowly")
+            
+        elif time_since_last_detection < 3.0:  # Tree detected within last 3 seconds
+            # Move at normal speed but stay alert
+            twist = Twist()
+            twist.linear.x = self.normal_speed
+            twist.angular.z = 0.0
+            self.cmd_pub.publish(twist)
+            self.publish_status("Recent tree detection - normal speed")
+            
+        else:  # No recent tree detections
+            # Full speed ahead
+            twist = Twist()
+            twist.linear.x = self.normal_speed
+            twist.angular.z = 0.0
+            self.cmd_pub.publish(twist)
+            self.publish_status("Path clear - full speed forward")
 
 def main(args=None):
     rclpy.init(args=args)
     
     try:
-        navigator = BasicNavigation()
-        navigator.get_logger().info('Starting Basic navigation...')
-        # navigator.get_logger().info('Using SLOW speeds to prevent crashes')
-        # navigator.get_logger().info('Safety first - better slow than crashed!')
+        navigator = BasicNavigationController()
         rclpy.spin(navigator)
     except KeyboardInterrupt:
-        navigator.get_logger().info('Basic navigation shutting down...')
+        navigator.get_logger().info('Navigation controller shutting down...')
     finally:
+        # Stop the robot
         if 'navigator' in locals():
-            # Ensure robot stops
             stop_twist = Twist()
             navigator.cmd_pub.publish(stop_twist)
-            navigator.get_logger().info(f'Session stats: {navigator.emergency_stops} emergency stops, {navigator.close_calls}')
             navigator.destroy_node()
         rclpy.shutdown()
 
