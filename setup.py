@@ -24,14 +24,9 @@ setup(
     # tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'hazard_detection_node = par_1.hazard_detection_node:main',
             'tennis_ball_detector = par_1.tennis_ball_detector:main',
             'tree_detector = par_1.tree_detector:main',
-            'tree_avoidance = par_1.tree_avoidance:main',
             'basic_navigation = par_1.basic_navigation:main',
-            'row_follower = par_1.row_follower:main',
-            'wall_follower = par_1.wall_follower:main',
-            'path_recorder_navigator = par_1.path_rec_nav:main',
         ],
     },
 )
