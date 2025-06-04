@@ -29,7 +29,7 @@ class CompleteMacadamiaNavigation(Node):
         self.tree_sub = self.create_subscription(
             String, '/detected_trees', self.tree_callback, 10)
         self.nut_sub = self.create_subscription(
-            String, '/detected_nuts', self.nut_callback, 10)  
+            String, '/tennis_ball_marker', self.nut_callback, 10)  
         self.scan_sub = self.create_subscription(
             LaserScan, '/scan', self.scan_callback, 10)
         
