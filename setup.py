@@ -29,6 +29,7 @@ setup(
             'basic_navigation = par_1.basic_navigation:main',
             'tree_following_controller = par_1.tree_following_controller:main',
             'complete_macadamia_navigation = par_1.complete_macadamia_navigation:main',
+            'improved_tree_detector = par_1.improved_tree_detector:main',
         ],
     },
 )
