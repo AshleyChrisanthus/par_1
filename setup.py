@@ -27,6 +27,7 @@ setup(
             'tennis_ball_detector = par_1.tennis_ball_detector:main',
             'tree_detector = par_1.tree_detector:main',
             'basic_navigation = par_1.basic_navigation:main',
+            'tree_following_controller = par_1.tree_following_controller',
         ],
     },
 )
