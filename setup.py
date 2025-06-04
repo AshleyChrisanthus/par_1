@@ -30,6 +30,7 @@ setup(
             'tree_following_controller = par_1.tree_following_controller:main',
             'complete_macadamia_navigation = par_1.complete_macadamia_navigation:main',
             'improved_tree_detector = par_1.improved_tree_detector:main',
+            'macadamia_field_explorer = par_1.macadamia_field_explorer:main',
         ],
     },
 )
