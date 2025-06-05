@@ -32,6 +32,7 @@ setup(
             'improved_tree_detector = par_1.improved_tree_detector:main',
             'macadamia_field_explorer = par_1.macadamia_field_explorer:main',
             'improved_tree_detect = par_1.improved_tree_detect:main',
+            'tree_row_follower = par_1.tree_row_follower:main',
         ],
     },
 )
