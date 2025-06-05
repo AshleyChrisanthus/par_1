@@ -14,18 +14,49 @@ import tf2_geometry_msgs
 from collections import deque
 import time
 
+class TreeTracker:
+    """Individual tree tracker with persistent ID"""
+    def __init__(self, tree_id, detection):
+        self.id = tree_id
+        self.position = (detection['center_x'], detection['center_y'])
+        self.last_seen_frame = 0
+        self.detection_count = 1
+        self.total_detections = 1
+        self.is_stable = False
+        self.map_position = None
+        self.distance = detection.get('distance', None)
+        
+    def update(self, detection, frame_num):
+        """Update tracker with new detection"""
+        self.position = (detection['center_x'], detection['center_y'])
+        self.last_seen_frame = frame_num
+        self.detection_count += 1
+        self.total_detections += 1
+        self.distance = detection.get('distance', None)
+        
+        # Consider stable after 3 detections
+        if self.detection_count >= 3:
+            self.is_stable = True
+    
+    def is_match(self, detection, max_distance=80):
+        """Check if detection matches this tracker"""
+        dist = np.sqrt((self.position[0] - detection['center_x'])**2 + 
+                      (self.position[1] - detection['center_y'])**2)
+        return dist <= max_distance
+    
+    def is_active(self, current_frame, max_frames_missing=10):
+        """Check if tracker is still active (recently seen)"""
+        return (current_frame - self.last_seen_frame) <= max_frames_missing
+
 class ImprovedTreeDetector(Node):
     """
-    Improved tree detector with better OpenCV processing to handle:
-    - Multiple contour fragmentation
-    - Spatial clustering of nearby detections
-    - Temporal filtering for stable detections
-    - Better shape and size validation
+    Real-time tree detector with persistent tracking and immediate detection display
+    Shows both immediate detections and maintains persistent tree IDs
     """
     
     def __init__(self):
         super().__init__('improved_tree_detect')
-        
+
         # Create OpenCV bridge
         self.bridge = CvBridge()
         self.scan = None
@@ -45,55 +76,46 @@ class ImprovedTreeDetector(Node):
         
         # Publishers
         self.tree_pub = self.create_publisher(String, '/detected_trees', 10)
-        self.marker_pub = self.create_publisher(Marker, '/tree_markers', 10)
+        self.marker_array_pub = self.create_publisher(MarkerArray, '/tree_markers', 10)
         self.debug_img_pub = self.create_publisher(Image, '/tree_detection/debug_image', 10)
         self.mask_img_pub = self.create_publisher(Image, '/tree_detection/mask_image', 10)
-        self.processed_img_pub = self.create_publisher(Image, '/tree_detection/processed_image', 10)
         
         # TF setup
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
-        # IMPROVED DETECTION PARAMETERS
-        # Color filtering
-        self.brown_hsv_lower = np.array([8, 40, 20])    # Slightly wider range
-        self.brown_hsv_upper = np.array([25, 255, 200]) # Include more brown variations
+        # Detection parameters (made less restrictive for real-time detection)
+        self.brown_hsv_lower = np.array([8, 40, 20])
+        self.brown_hsv_upper = np.array([25, 255, 200])
         
-        # Size filtering (more restrictive)
-        self.min_area = 300          # Increased minimum area
-        self.max_area = 10000        # Maximum area to reject huge blobs
-        self.min_aspect_ratio = 0.5  # Trees should be somewhat vertical
-        self.max_aspect_ratio = 3.0  # But not too thin
+        # More permissive size filtering for immediate detection
+        self.min_area = 250
+        self.max_area = 8000
+        self.min_aspect_ratio = 0.4
+        self.max_aspect_ratio = 4.0
         
-        # Spatial clustering parameters
-        self.cluster_distance = 100   # Pixels - merge detections within this distance
-        self.min_contour_distance = 50  # Minimum distance between separate trees
+        # Clustering parameters
+        self.cluster_distance = 100
         
-        # Temporal filtering parameters
-        self.detection_history = deque(maxlen=5)  # Keep last 5 frames
-        self.stability_threshold = 3  # Detection must appear in 3/5 frames to be stable
-        
-        # LiDAR-based size validation
-        self.expected_tree_width_meters = 0.15  # Expected tree diameter (15cm)
-        self.size_tolerance = 0.5  # Allow 50% variation in expected size
-        
-        # Tracking
-        self.stable_detections = []  # Current stable tree detections
-        self.detection_count = 0
+        # Tree tracking
+        self.tree_trackers = {}  # Dict of TreeTracker objects
+        self.next_tree_id = 1
         self.frame_count = 0
-        self.last_detection_frame = 0
-        self.last_no_detection_log = 0
-        self.detected_trees_positions = []
+        self.last_log_frame = 0
         
-        self.get_logger().info('Improved Tree Detector initialized!')
-        self.get_logger().info('Enhanced OpenCV processing with spatial clustering and temporal filtering')
+        # LiDAR validation (more permissive)
+        self.expected_tree_width_meters = 0.15
+        self.size_tolerance = 0.8  # More permissive (80% tolerance)
+        
+        self.get_logger().info('Real-time Tree Detector initialized!')
+        self.get_logger().info('🌳 Shows immediate detections with persistent Tree IDs')
         
     def scan_callback(self, msg):
         """Store LiDAR scan."""
         self.scan = msg
         
     def image_callback(self, msg):
-        """Main detection callback with improved processing."""
+        """Main detection callback - now with real-time tracking"""
         if self.scan is None:
             return
             
@@ -101,44 +123,46 @@ class ImprovedTreeDetector(Node):
             self.frame_count += 1
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             
-            # IMPROVED DETECTION PIPELINE
-            trees = self.detect_trees_improved(cv_image)
+            # Detect trees with improved pipeline but less restrictive filtering
+            current_detections = self.detect_trees_realtime(cv_image)
             
-            # Temporal filtering for stability
-            stable_trees = self.apply_temporal_filtering(trees)
+            # Update tree trackers with current detections
+            self.update_tree_trackers(current_detections)
             
-            if stable_trees:
-                self.handle_trees_detected(cv_image, stable_trees)
-            else:
-                self.handle_no_trees_detected()
+            # Clean up old trackers
+            self.cleanup_inactive_trackers()
             
-            # Enhanced debug visualization
-            debug_img = self.create_enhanced_debug_image(cv_image, trees, stable_trees)
+            # Publish results
+            self.publish_detection_results()
+            
+            # Enhanced logging (every 30 frames = ~1 second)
+            if self.frame_count - self.last_log_frame >= 30:
+                self.log_current_state()
+                self.last_log_frame = self.frame_count
+            
+            # Publish markers for all tracked trees
+            self.publish_tree_markers(cv_image)
+            
+            # Debug visualization
+            debug_img = self.create_realtime_debug_image(cv_image, current_detections)
             self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img, encoding='bgr8'))
                 
         except Exception as e:
-            self.get_logger().error(f'Error in improved tree detection: {str(e)}')
+            self.get_logger().error(f'Error in real-time tree detection: {str(e)}')
     
-    def detect_trees_improved(self, image):
+    def detect_trees_realtime(self, image):
         """
-        IMPROVED DETECTION PIPELINE
-        1. Better preprocessing
-        2. Contour merging and clustering
-        3. Shape and size validation
-        4. Non-maximum suppression
+        Real-time detection with immediate results (less filtering)
         """
-        # Convert to HSV
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         
-        # Create mask with improved morphological operations
+        # Create mask
         mask = cv2.inRange(hsv, self.brown_hsv_lower, self.brown_hsv_upper)
         
-        # IMPROVEMENT 1: Better morphological operations
-        # Remove noise with opening, then fill gaps with closing
-        kernel_open = np.ones((3, 3), np.uint8)
-        kernel_close = np.ones((7, 7), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close)
+        # Light morphological operations for speed
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
         # Publish mask for debugging
         self.mask_img_pub.publish(self.bridge.cv2_to_imgmsg(mask, encoding='mono8'))
@@ -149,49 +173,41 @@ class ImprovedTreeDetector(Node):
         if not contours:
             return []
         
-        # IMPROVEMENT 2: Filter contours by basic properties
-        valid_contours = []
+        # Filter and cluster contours
+        valid_detections = []
         for contour in contours:
             area = cv2.contourArea(contour)
             if self.min_area <= area <= self.max_area:
-                # Check aspect ratio
                 x, y, w, h = cv2.boundingRect(contour)
                 aspect_ratio = h / w if w > 0 else 0
                 
                 if self.min_aspect_ratio <= aspect_ratio <= self.max_aspect_ratio:
-                    valid_contours.append(contour)
+                    center_x = x + w / 2
+                    center_y = y + h / 2
+                    
+                    # Get distance for this detection
+                    distance = self.get_lidar_distance(center_x, image.shape[1])
+                    
+                    detection = {
+                        'center_x': center_x,
+                        'center_y': center_y,
+                        'bbox': (x, y, w, h),
+                        'area': area,
+                        'distance': distance,
+                        'aspect_ratio': aspect_ratio
+                    }
+                    
+                    # Light size validation (more permissive)
+                    if self.validate_detection_size(detection):
+                        valid_detections.append(detection)
         
-        if not valid_contours:
-            return []
+        # Cluster nearby detections
+        clustered_detections = self.cluster_detections(valid_detections)
         
-        # IMPROVEMENT 3: Convert to detection format and merge nearby detections
-        raw_detections = []
-        for contour in valid_contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            area = cv2.contourArea(contour)
-            center_x = x + w / 2
-            center_y = y + h / 2
-            
-            raw_detections.append({
-                'center_x': center_x,
-                'center_y': center_y,
-                'bbox': (x, y, w, h),
-                'area': area,
-                'contour': contour
-            })
-        
-        # IMPROVEMENT 4: Spatial clustering to merge nearby detections
-        clustered_detections = self.cluster_detections(raw_detections)
-        
-        # IMPROVEMENT 5: Validate detections using LiDAR data
-        validated_detections = self.validate_detections_with_lidar(clustered_detections, image.shape[1])
-        
-        return validated_detections
+        return clustered_detections
     
     def cluster_detections(self, detections):
-        """
-        IMPROVEMENT: Cluster nearby detections that likely belong to the same tree
-        """
+        """Cluster nearby detections - same logic but simpler"""
         if not detections:
             return []
         
@@ -202,11 +218,9 @@ class ImprovedTreeDetector(Node):
             if used[i]:
                 continue
                 
-            # Start a new cluster
             cluster = [detection]
             used[i] = True
             
-            # Find all detections within clustering distance
             for j, other_detection in enumerate(detections):
                 if used[j]:
                     continue
@@ -218,17 +232,16 @@ class ImprovedTreeDetector(Node):
                     cluster.append(other_detection)
                     used[j] = True
             
-            # Merge cluster into single detection
+            # Merge cluster
             merged_detection = self.merge_cluster(cluster)
             clustered.append(merged_detection)
         
         return clustered
     
     def merge_cluster(self, cluster):
-        """
-        Merge a cluster of detections into a single detection
-        """
+        """Merge cluster of detections"""
         if len(cluster) == 1:
+            cluster[0]['cluster_size'] = 1
             return cluster[0]
         
         # Calculate merged bounding box
@@ -240,46 +253,205 @@ class ImprovedTreeDetector(Node):
         merged_w = max_x - min_x
         merged_h = max_y - min_y
         merged_area = sum([det['area'] for det in cluster])
+        avg_distance = np.mean([det['distance'] for det in cluster if det['distance']])
         
         return {
             'center_x': min_x + merged_w / 2,
             'center_y': min_y + merged_h / 2,
             'bbox': (min_x, min_y, merged_w, merged_h),
             'area': merged_area,
-            'cluster_size': len(cluster)  # Track how many were merged
+            'distance': avg_distance,
+            'cluster_size': len(cluster)
         }
     
-    def validate_detections_with_lidar(self, detections, image_width):
-        """
-        IMPROVEMENT: Validate detection sizes using LiDAR distance data
-        """
-        validated = []
+    def validate_detection_size(self, detection):
+        """Light size validation - more permissive"""
+        if detection['distance'] is None or detection['distance'] <= 0:
+            return True  # Accept if no distance data
         
-        for detection in detections:
-            # Get LiDAR distance for this detection
-            distance = self.get_lidar_distance(detection['center_x'], image_width)
-            
-            if distance is None:
-                continue  # Skip if no valid LiDAR data
-            
-            # Calculate expected pixel size at this distance
-            # Assuming camera FOV and resolution
-            expected_pixel_width = self.calculate_expected_pixel_size(distance)
-            actual_pixel_width = detection['bbox'][2]
-            
-            # Check if actual size is reasonable compared to expected
-            size_ratio = actual_pixel_width / expected_pixel_width if expected_pixel_width > 0 else 0
-            
-            if (1 - self.size_tolerance) <= size_ratio <= (1 + self.size_tolerance):
-                detection['distance'] = distance
-                detection['size_ratio'] = size_ratio
-                validated.append(detection)
-            else:
-                # Log rejected detections for debugging
-                self.get_logger().debug(f'Rejected detection: size_ratio={size_ratio:.2f}, distance={distance:.2f}m')
+        expected_pixel_width = self.calculate_expected_pixel_size(detection['distance'])
+        actual_pixel_width = detection['bbox'][2]
         
-        return validated
+        if expected_pixel_width <= 0:
+            return True
+        
+        size_ratio = actual_pixel_width / expected_pixel_width
+        return (1 - self.size_tolerance) <= size_ratio <= (1 + self.size_tolerance)
     
+    def update_tree_trackers(self, current_detections):
+        """
+        Update tree trackers with current detections
+        This maintains persistent Tree IDs
+        """
+        # Mark all trackers as not updated this frame
+        for tracker in self.tree_trackers.values():
+            tracker.detection_count = 0  # Reset for this frame
+        
+        # Try to match each detection to existing trackers
+        unmatched_detections = []
+        
+        for detection in current_detections:
+            matched = False
+            
+            # Find best matching tracker
+            best_match = None
+            best_distance = float('inf')
+            
+            for tracker in self.tree_trackers.values():
+                if tracker.is_match(detection):
+                    dist = np.sqrt((tracker.position[0] - detection['center_x'])**2 + 
+                                  (tracker.position[1] - detection['center_y'])**2)
+                    if dist < best_distance:
+                        best_distance = dist
+                        best_match = tracker
+            
+            if best_match:
+                # Update existing tracker
+                best_match.update(detection, self.frame_count)
+                matched = True
+            else:
+                # No match found, add to unmatched
+                unmatched_detections.append(detection)
+        
+        # Create new trackers for unmatched detections
+        for detection in unmatched_detections:
+            new_tracker = TreeTracker(self.next_tree_id, detection)
+            new_tracker.last_seen_frame = self.frame_count
+            self.tree_trackers[self.next_tree_id] = new_tracker
+            
+            self.get_logger().info(f'🆕 NEW TREE DETECTED! Assigned Tree #{self.next_tree_id}')
+            self.next_tree_id += 1
+    
+    def cleanup_inactive_trackers(self):
+        """Remove trackers that haven't been seen recently"""
+        inactive_ids = []
+        
+        for tree_id, tracker in self.tree_trackers.items():
+            if not tracker.is_active(self.frame_count, max_frames_missing=15):  # 0.5 seconds
+                inactive_ids.append(tree_id)
+        
+        for tree_id in inactive_ids:
+            self.get_logger().info(f'❌ Tree #{tree_id} lost from view')
+            del self.tree_trackers[tree_id]
+    
+    def publish_detection_results(self):
+        """Publish detection results for navigation"""
+        active_trees = [t for t in self.tree_trackers.values() if t.is_active(self.frame_count)]
+        
+        tree_msg = String()
+        tree_msg.data = f"trees_detected:{len(active_trees)}"
+        self.tree_pub.publish(tree_msg)
+    
+    def log_current_state(self):
+        """Log current detection state with persistent IDs"""
+        active_trees = [t for t in self.tree_trackers.values() if t.is_active(self.frame_count)]
+        
+        if active_trees:
+            self.get_logger().info(f'🌳 ACTIVE TREES: {len(active_trees)} total')
+            
+            for tracker in sorted(active_trees, key=lambda x: x.id):
+                status = "STABLE" if tracker.is_stable else "TRACKING"
+                distance_info = f"dist:{tracker.distance:.2f}m" if tracker.distance else "dist:unknown"
+                
+                self.get_logger().info(f'  Tree #{tracker.id}: {status} | {distance_info} | detections:{tracker.total_detections}')
+        else:
+            self.get_logger().info('No trees currently detected - scanning...')
+    
+    def publish_tree_markers(self, cv_image):
+        """Publish markers for all tracked trees"""
+        marker_array = MarkerArray()
+        
+        for tracker in self.tree_trackers.values():
+            if tracker.is_active(self.frame_count):
+                # Get world coordinates
+                world_coords = self.get_world_coordinates(tracker.position[0], cv_image.shape[1])
+                
+                if world_coords and world_coords[2] is not None:
+                    lidar_x, lidar_y, map_x, map_y = world_coords
+                    tracker.map_position = (map_x, map_y)
+                    
+                    # Create marker
+                    marker = Marker()
+                    marker.header.frame_id = 'map'
+                    marker.header.stamp = self.get_clock().now().to_msg()
+                    marker.ns = 'persistent_trees'
+                    marker.id = tracker.id
+                    marker.type = Marker.CYLINDER
+                    marker.action = Marker.ADD
+                    
+                    marker.pose.position.x = map_x
+                    marker.pose.position.y = map_y
+                    marker.pose.position.z = 0.5
+                    marker.pose.orientation.w = 1.0
+                    
+                    marker.scale.x = 0.25
+                    marker.scale.y = 0.25
+                    marker.scale.z = 1.0
+                    
+                    # Color based on stability
+                    if tracker.is_stable:
+                        # Stable trees are brown
+                        marker.color.r = 0.6
+                        marker.color.g = 0.3
+                        marker.color.b = 0.1
+                        marker.color.a = 0.9
+                    else:
+                        # New trees are orange
+                        marker.color.r = 1.0
+                        marker.color.g = 0.5
+                        marker.color.b = 0.0
+                        marker.color.a = 0.7
+                    
+                    marker_array.markers.append(marker)
+        
+        self.marker_array_pub.publish(marker_array)
+    
+    def create_realtime_debug_image(self, original_image, current_detections):
+        """Create debug image showing real-time tracking"""
+        debug_img = original_image.copy()
+        
+        # Draw current detections
+        for detection in current_detections:
+            x, y, w, h = detection['bbox']
+            cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 255), 2)  # Yellow for current
+            cv2.putText(debug_img, "CURRENT", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        
+        # Draw tracked trees with persistent IDs
+        for tracker in self.tree_trackers.values():
+            if tracker.is_active(self.frame_count):
+                x, y = int(tracker.position[0] - 50), int(tracker.position[1] - 50)
+                w, h = 100, 100  # Approximate box for visualization
+                
+                # Color based on stability
+                color = (0, 255, 0) if tracker.is_stable else (0, 165, 255)  # Green=stable, Orange=new
+                
+                cv2.rectangle(debug_img, (x, y), (x + w, y + h), color, 3)
+                cv2.circle(debug_img, (int(tracker.position[0]), int(tracker.position[1])), 10, color, -1)
+                
+                # Label with persistent ID
+                label = f"TREE #{tracker.id}"
+                status = " (STABLE)" if tracker.is_stable else " (NEW)"
+                cv2.putText(debug_img, label + status, (x, y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                
+                # Technical info
+                tech_info = f"detections:{tracker.total_detections}"
+                if tracker.distance:
+                    tech_info += f" {tracker.distance:.1f}m"
+                cv2.putText(debug_img, tech_info, (x, y + h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        
+        # Status overlay
+        active_count = len([t for t in self.tree_trackers.values() if t.is_active(self.frame_count)])
+        stable_count = len([t for t in self.tree_trackers.values() if t.is_active(self.frame_count) and t.is_stable])
+        
+        cv2.putText(debug_img, f"🌳 Active Trees: {active_count} | Stable: {stable_count}", 
+                    (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        cv2.putText(debug_img, f"Frame: {self.frame_count} | Current detections: {len(current_detections)}", 
+                    (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        return debug_img
+    
+    # Keep utility methods from previous version
     def get_lidar_distance(self, center_x, image_width):
         """Get LiDAR distance for a pixel coordinate"""
         if self.scan is None:
@@ -300,147 +472,15 @@ class ImprovedTreeDetector(Node):
     
     def calculate_expected_pixel_size(self, distance):
         """Calculate expected pixel size of tree at given distance"""
-        # Rough approximation - you may need to calibrate this
-        # Assumes 60-degree horizontal FOV and 640 pixel width
-        camera_fov = np.radians(60)  # 60 degrees in radians
+        camera_fov = np.radians(60)
         image_width_pixels = 640
-        
-        # Angular size of tree at distance
         angular_size = 2 * np.arctan(self.expected_tree_width_meters / (2 * distance))
-        
-        # Convert to pixels
         pixels_per_radian = image_width_pixels / camera_fov
         expected_pixels = angular_size * pixels_per_radian
-        
-        return max(expected_pixels, 10)  # Minimum 10 pixels
+        return max(expected_pixels, 10)
     
-    def apply_temporal_filtering(self, current_detections):
-        """
-        IMPROVEMENT: Apply temporal filtering for stable detections
-        """
-        # Add current detections to history
-        self.detection_history.append(current_detections)
-        
-        if len(self.detection_history) < self.stability_threshold:
-            return []  # Not enough history yet
-        
-        # Find detections that appear consistently
-        stable_detections = []
-        
-        for detection in current_detections:
-            stability_count = 0
-            
-            # Check how many recent frames had a similar detection
-            for past_detections in self.detection_history:
-                for past_detection in past_detections:
-                    distance = np.sqrt((detection['center_x'] - past_detection['center_x'])**2 + 
-                                     (detection['center_y'] - past_detection['center_y'])**2)
-                    
-                    if distance <= self.cluster_distance:  # Same detection tolerance
-                        stability_count += 1
-                        break
-            
-            # If detection appears in enough frames, consider it stable
-            if stability_count >= self.stability_threshold:
-                detection['stability_count'] = stability_count
-                stable_detections.append(detection)
-        
-        return stable_detections
-    
-    def handle_trees_detected(self, cv_image, trees):
-        """Handle stable tree detections"""
-        # Publish detection message
-        tree_msg = String()
-        tree_msg.data = f"trees_detected:{len(trees)}"
-        self.tree_pub.publish(tree_msg)
-        
-        # Log with more detail about improvements
-        if self.frame_count - self.last_detection_frame > 30:  # Every ~1 second
-            self.detection_count += 1
-            self.get_logger().info(f'🌳 STABLE TREES DETECTED! Found {len(trees)} stable tree(s)')
-            
-            for i, tree in enumerate(trees):
-                cluster_info = f" (merged from {tree.get('cluster_size', 1)} detections)" if tree.get('cluster_size', 1) > 1 else ""
-                stability_info = f" stability:{tree.get('stability_count', 0)}/5"
-                distance_info = f" distance:{tree.get('distance', 0):.2f}m" if tree.get('distance') else ""
-                size_info = f" size_ratio:{tree.get('size_ratio', 0):.2f}" if tree.get('size_ratio') else ""
-                
-                self.get_logger().info(f'  Tree #{i+1}: {cluster_info}{stability_info}{distance_info}{size_info}')
-            
-            self.last_detection_frame = self.frame_count
-            self.process_trees_for_markers(cv_image, trees)
-    
-    def handle_no_trees_detected(self):
-        """Handle when no stable trees are detected"""
-        if self.frame_count - self.last_no_detection_log > 90:  # Every ~3 seconds
-            self.get_logger().info('No stable trees detected - scanning...')
-            self.last_no_detection_log = self.frame_count
-    
-    def process_trees_for_markers(self, cv_image, trees):
-        """Process trees for coordinate calculation and marker publishing"""
-        for i, tree in enumerate(trees):
-            world_coords = self.get_world_coordinates(tree['center_x'], cv_image.shape[1])
-            
-            if world_coords:
-                lidar_x, lidar_y, map_x, map_y = world_coords
-                
-                if map_x is not None and map_y is not None:
-                    self.publish_tree_marker(map_x, map_y, i)
-                    
-                    tree_position = (map_x, map_y)
-                    if not self.is_duplicate_detection(tree_position):
-                        self.detected_trees_positions.append(tree_position)
-    
-    def create_enhanced_debug_image(self, original_image, raw_detections, stable_detections):
-        """
-        IMPROVEMENT: Enhanced debug visualization showing processing steps
-        """
-        debug_img = original_image.copy()
-        
-        # Draw raw detections in red (before clustering/filtering)
-        for detection in raw_detections:
-            x, y, w, h = detection['bbox']
-            cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 0, 255), 2)  # Red
-            cv2.putText(debug_img, "RAW", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-        
-        # Draw stable detections in green (after all filtering)
-        for i, detection in enumerate(stable_detections):
-            x, y, w, h = detection['bbox']
-            cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 0), 3)  # Green
-            
-            center_x, center_y = int(detection['center_x']), int(detection['center_y'])
-            cv2.circle(debug_img, (center_x, center_y), 8, (0, 255, 0), -1)
-            
-            # Enhanced labels
-            label = f"TREE #{i+1}"
-            if detection.get('cluster_size', 1) > 1:
-                label += f" (M:{detection['cluster_size']})"
-            if detection.get('stability_count'):
-                label += f" S:{detection['stability_count']}"
-            
-            cv2.putText(debug_img, label, (x, y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
-            # Add technical info
-            tech_info = f"{detection['area']:.0f}px²"
-            if detection.get('distance'):
-                tech_info += f" {detection['distance']:.1f}m"
-            cv2.putText(debug_img, tech_info, (x, y + h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-        
-        # Enhanced status overlay
-        cv2.putText(debug_img, f"🌳 Raw detections: {len(raw_detections)} | Stable: {len(stable_detections)}", 
-                    (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        cv2.putText(debug_img, f"Frame: {self.frame_count} | History: {len(self.detection_history)}/5", 
-                    (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        cv2.putText(debug_img, f"Total stable trees found: {len(self.detected_trees_positions)}", 
-                    (10, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        return debug_img
-    
-    # Keep existing methods for coordinate transformation and marker publishing
     def get_world_coordinates(self, center_x, image_width):
-        """Convert pixel coordinates to world coordinates - same as before"""
+        """Convert pixel coordinates to world coordinates"""
         try:
             normalized_x = center_x / image_width
             angle = self.scan.angle_min + normalized_x * (self.scan.angle_max - self.scan.angle_min)
@@ -468,11 +508,10 @@ class ImprovedTreeDetector(Node):
                 return (point_lidar.point.x, point_lidar.point.y, None, None)
                 
         except Exception as e:
-            self.get_logger().error(f'Error getting world coordinates: {str(e)}')
             return None
     
     def transform_to_map(self, point_lidar):
-        """Transform point to map frame - same as before"""
+        """Transform point to map frame"""
         try:
             timeout = rclpy.duration.Duration(seconds=0.1)
             if self.tf_buffer.can_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout):
@@ -485,49 +524,15 @@ class ImprovedTreeDetector(Node):
                 return None
         except Exception as e:
             return None
-    
-    def publish_tree_marker(self, map_x, map_y, tree_id):
-        """Publish marker for RViz - same as before"""
-        marker = Marker()
-        marker.header.frame_id = 'map'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'detected_trees'
-        marker.id = tree_id
-        marker.type = Marker.CYLINDER
-        marker.action = Marker.ADD
-        
-        marker.pose.position.x = map_x
-        marker.pose.position.y = map_y
-        marker.pose.position.z = 0.5
-        marker.pose.orientation.w = 1.0
-        
-        marker.scale.x = 0.25
-        marker.scale.y = 0.25
-        marker.scale.z = 1.0
-        
-        marker.color.r = 0.6
-        marker.color.g = 0.3
-        marker.color.b = 0.1
-        marker.color.a = 0.9
-        
-        self.marker_pub.publish(marker)
-    
-    def is_duplicate_detection(self, new_position, threshold=0.5):
-        """Check if tree position is too close to already detected trees - same as before"""
-        new_x, new_y = new_position
-        for existing_x, existing_y in self.detected_trees_positions:
-            distance = np.sqrt((new_x - existing_x)**2 + (new_y - existing_y)**2)
-            if distance < threshold:
-                return True
-        return False
 
 def main(args=None):
     rclpy.init(args=args)
     
     try:
         tree_detector = ImprovedTreeDetector()
-        tree_detector.get_logger().info('Starting improved tree detector with enhanced OpenCV processing...')
-        tree_detector.get_logger().info('New debug topics: /tree_detection/mask_image, /tree_detection/processed_image')
+        tree_detector.get_logger().info('🚀 Starting Improved tree detector with persistent tracking...')
+        # tree_detector.get_logger().info('🌳 Trees get persistent IDs: Tree #1, Tree #2, etc.')
+        # tree_detector.get_logger().info('🆕 New trees appear immediately, stable after 3 detections')
         rclpy.spin(tree_detector)
     except KeyboardInterrupt:
         tree_detector.get_logger().info('Improved tree detector shutting down...')
