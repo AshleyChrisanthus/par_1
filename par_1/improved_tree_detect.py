@@ -25,6 +25,7 @@ class TreeTracker:
         self.is_stable = False
         self.map_position = None
         self.distance = detection.get('distance', None)
+        self.confidence_score = detection.get('confidence', 0.5)
         
     def update(self, detection, frame_num):
         """Update tracker with new detection"""
@@ -33,30 +34,31 @@ class TreeTracker:
         self.detection_count += 1
         self.total_detections += 1
         self.distance = detection.get('distance', None)
+        self.confidence_score = detection.get('confidence', 0.5)
         
-        # Consider stable after 3 detections
-        if self.detection_count >= 3:
+        # Consider stable after 5 consistent detections (more restrictive)
+        if self.detection_count >= 5:
             self.is_stable = True
     
-    def is_match(self, detection, max_distance=80):
+    def is_match(self, detection, max_distance=60):  # Reduced from 80
         """Check if detection matches this tracker"""
         dist = np.sqrt((self.position[0] - detection['center_x'])**2 + 
                       (self.position[1] - detection['center_y'])**2)
         return dist <= max_distance
     
-    def is_active(self, current_frame, max_frames_missing=10):
+    def is_active(self, current_frame, max_frames_missing=8):  # More strict
         """Check if tracker is still active (recently seen)"""
         return (current_frame - self.last_seen_frame) <= max_frames_missing
 
 class ImprovedTreeDetector(Node):
     """
-    Real-time tree detector with persistent tracking and immediate detection display
-    Shows both immediate detections and maintains persistent tree IDs
+    Restrictive tree detector specifically tuned for brown cylinders in real-world environments
+    Much more selective to avoid false positives from background objects
     """
     
     def __init__(self):
         super().__init__('improved_tree_detect')
-
+        
         # Create OpenCV bridge
         self.bridge = CvBridge()
         self.scan = None
@@ -79,43 +81,60 @@ class ImprovedTreeDetector(Node):
         self.marker_array_pub = self.create_publisher(MarkerArray, '/tree_markers', 10)
         self.debug_img_pub = self.create_publisher(Image, '/tree_detection/debug_image', 10)
         self.mask_img_pub = self.create_publisher(Image, '/tree_detection/mask_image', 10)
+        self.filtered_img_pub = self.create_publisher(Image, '/tree_detection/filtered_image', 10)
         
         # TF setup
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
-        # Detection parameters (made less restrictive for real-time detection)
-        self.brown_hsv_lower = np.array([8, 40, 20])
-        self.brown_hsv_upper = np.array([25, 255, 200])
+        # RESTRICTIVE DETECTION PARAMETERS FOR REAL WORLD
+        # More specific brown color range for cylinders (not furniture/walls)
+        self.brown_hsv_lower = np.array([10, 60, 30])   # More restrictive saturation/value
+        self.brown_hsv_upper = np.array([20, 200, 150]) # Avoid very bright/dark browns
         
-        # More permissive size filtering for immediate detection
-        self.min_area = 250
-        self.max_area = 8000
-        self.min_aspect_ratio = 0.4
-        self.max_aspect_ratio = 4.0
+        # Much more restrictive size filtering
+        self.min_area = 400          # Larger minimum (reject small brown spots)
+        self.max_area = 3000         # Smaller maximum (reject walls/furniture)
+        self.min_aspect_ratio = 0.8  # More vertical (cylinders are tall)
+        self.max_aspect_ratio = 2.5  # Not too thin
         
-        # Clustering parameters
-        self.cluster_distance = 100
+        # Geometric validation for cylinders
+        self.min_width = 15          # Minimum pixel width
+        self.max_width = 120         # Maximum pixel width
+        self.min_height = 25         # Minimum pixel height
+        self.max_height = 200        # Maximum pixel height
+        
+        # NO distance constraints for safety - robot must detect ALL trees
+        # Will use distance as confidence weighting factor instead of hard limit
+        
+        # Clustering parameters (more strict)
+        self.cluster_distance = 50   # Reduced clustering distance
+        self.min_separation = 0.4    # Minimum 40cm between different trees
+        
+        # Confidence scoring parameters (safety-first approach)
+        self.min_confidence = 0.4    # Lower threshold - detect more potential trees for safety
         
         # Tree tracking
-        self.tree_trackers = {}  # Dict of TreeTracker objects
+        self.tree_trackers = {}
         self.next_tree_id = 1
         self.frame_count = 0
         self.last_log_frame = 0
         
-        # LiDAR validation (more permissive)
-        self.expected_tree_width_meters = 0.15
-        self.size_tolerance = 0.8  # More permissive (80% tolerance)
+        # LiDAR validation (strict)
+        self.expected_tree_width_meters = 0.12  # Expected tree diameter (12cm)
+        self.size_tolerance = 0.4  # Only 40% tolerance (much more strict)
         
-        self.get_logger().info('Real-time Tree Detector initialized!')
-        self.get_logger().info('🌳 Shows immediate detections with persistent Tree IDs')
+        self.get_logger().info('Restrictive Tree Detector initialized!')
+        self.get_logger().info('🎯 Tuned for brown cylinders in real-world environments')
+        self.get_logger().info('🚫 Strict shape filtering to avoid background false positives')
+        self.get_logger().info('⚠️  SAFETY FIRST: Detects trees at ALL distances to prevent collisions')
         
     def scan_callback(self, msg):
         """Store LiDAR scan."""
         self.scan = msg
         
     def image_callback(self, msg):
-        """Main detection callback - now with real-time tracking"""
+        """Main detection callback with restrictive filtering"""
         if self.scan is None:
             return
             
@@ -123,177 +142,240 @@ class ImprovedTreeDetector(Node):
             self.frame_count += 1
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             
-            # Detect trees with improved pipeline but less restrictive filtering
-            current_detections = self.detect_trees_realtime(cv_image)
+            # RESTRICTIVE detection pipeline
+            current_detections = self.detect_trees_restrictive(cv_image)
             
-            # Update tree trackers with current detections
+            # Update tree trackers with only high-confidence detections
             self.update_tree_trackers(current_detections)
             
-            # Clean up old trackers
+            # Clean up trackers more aggressively
             self.cleanup_inactive_trackers()
             
             # Publish results
             self.publish_detection_results()
             
-            # Enhanced logging (every 30 frames = ~1 second)
-            if self.frame_count - self.last_log_frame >= 30:
+            # Log state less frequently to reduce spam
+            if self.frame_count - self.last_log_frame >= 60:  # Every 2 seconds
                 self.log_current_state()
                 self.last_log_frame = self.frame_count
             
-            # Publish markers for all tracked trees
+            # Publish markers
             self.publish_tree_markers(cv_image)
             
             # Debug visualization
-            debug_img = self.create_realtime_debug_image(cv_image, current_detections)
+            debug_img = self.create_debug_image(cv_image, current_detections)
             self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img, encoding='bgr8'))
                 
         except Exception as e:
-            self.get_logger().error(f'Error in real-time tree detection: {str(e)}')
+            self.get_logger().error(f'Error in restrictive tree detection: {str(e)}')
     
-    def detect_trees_realtime(self, image):
+    def detect_trees_restrictive(self, image):
         """
-        Real-time detection with immediate results (less filtering)
+        RESTRICTIVE detection specifically for brown cylinders
+        Multiple filtering stages to eliminate false positives
         """
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         
-        # Create mask
+        # Stage 1: Color filtering (more restrictive)
         mask = cv2.inRange(hsv, self.brown_hsv_lower, self.brown_hsv_upper)
         
-        # Light morphological operations for speed
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        # Stage 2: Aggressive noise removal
+        # Remove small noise first
+        kernel_small = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_small, iterations=2)
+        
+        # Fill gaps in cylinders
+        kernel_large = np.ones((8, 8), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_large, iterations=1)
+        
+        # Final noise removal
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_small, iterations=1)
         
         # Publish mask for debugging
         self.mask_img_pub.publish(self.bridge.cv2_to_imgmsg(mask, encoding='mono8'))
         
-        # Find contours
+        # Stage 3: Find contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
             return []
         
-        # Filter and cluster contours
-        valid_detections = []
+        # Stage 4: Geometric filtering for cylinders
+        candidate_detections = []
+        
         for contour in contours:
-            area = cv2.contourArea(contour)
-            if self.min_area <= area <= self.max_area:
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = h / w if w > 0 else 0
-                
-                if self.min_aspect_ratio <= aspect_ratio <= self.max_aspect_ratio:
-                    center_x = x + w / 2
-                    center_y = y + h / 2
-                    
-                    # Get distance for this detection
-                    distance = self.get_lidar_distance(center_x, image.shape[1])
-                    
-                    detection = {
-                        'center_x': center_x,
-                        'center_y': center_y,
-                        'bbox': (x, y, w, h),
-                        'area': area,
-                        'distance': distance,
-                        'aspect_ratio': aspect_ratio
-                    }
-                    
-                    # Light size validation (more permissive)
-                    if self.validate_detection_size(detection):
-                        valid_detections.append(detection)
+            detection = self.evaluate_contour_as_tree(contour, image.shape[1])
+            if detection:
+                candidate_detections.append(detection)
         
-        # Cluster nearby detections
-        clustered_detections = self.cluster_detections(valid_detections)
+        # Stage 5: Spatial filtering (remove trees too close together)
+        final_detections = self.filter_by_separation(validated_detections)
         
-        return clustered_detections
+        return final_detections
     
-    def cluster_detections(self, detections):
-        """Cluster nearby detections - same logic but simpler"""
-        if not detections:
-            return []
+    def evaluate_contour_as_tree(self, contour, image_width):
+        """
+        Comprehensive evaluation of whether a contour represents a tree
+        Returns detection dict if valid, None if rejected
+        """
+        # Basic geometric properties
+        area = cv2.contourArea(contour)
+        x, y, w, h = cv2.boundingRect(contour)
         
-        clustered = []
-        used = [False] * len(detections)
+        # Stage 1: Size filtering
+        if not (self.min_area <= area <= self.max_area):
+            return None
         
-        for i, detection in enumerate(detections):
-            if used[i]:
-                continue
-                
-            cluster = [detection]
-            used[i] = True
+        if not (self.min_width <= w <= self.max_width):
+            return None
             
-            for j, other_detection in enumerate(detections):
-                if used[j]:
-                    continue
-                    
-                distance = np.sqrt((detection['center_x'] - other_detection['center_x'])**2 + 
-                                 (detection['center_y'] - other_detection['center_y'])**2)
-                
-                if distance <= self.cluster_distance:
-                    cluster.append(other_detection)
-                    used[j] = True
+        if not (self.min_height <= h <= self.max_height):
+            return None
+        
+        # Stage 2: Aspect ratio (cylinders should be vertical-ish)
+        aspect_ratio = h / w if w > 0 else 0
+        if not (self.min_aspect_ratio <= aspect_ratio <= self.max_aspect_ratio):
+            return None
+        
+        # Stage 3: Shape analysis
+        # Cylinders should have relatively regular shapes
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0:
+            return None
             
-            # Merge cluster
-            merged_detection = self.merge_cluster(cluster)
-            clustered.append(merged_detection)
+        # Circularity measure (4π*area/perimeter²) - cylinders viewed from side should be somewhat rectangular
+        circularity = 4 * np.pi * area / (perimeter * perimeter)
         
-        return clustered
-    
-    def merge_cluster(self, cluster):
-        """Merge cluster of detections"""
-        if len(cluster) == 1:
-            cluster[0]['cluster_size'] = 1
-            return cluster[0]
+        # Extent (area/bounding_box_area) - should be reasonably filled
+        bbox_area = w * h
+        extent = area / bbox_area if bbox_area > 0 else 0
         
-        # Calculate merged bounding box
-        min_x = min([det['bbox'][0] for det in cluster])
-        min_y = min([det['bbox'][1] for det in cluster])
-        max_x = max([det['bbox'][0] + det['bbox'][2] for det in cluster])
-        max_y = max([det['bbox'][1] + det['bbox'][3] for det in cluster])
+        # Stage 4: Get distance (no hard constraints for safety)
+        center_x = x + w / 2
+        center_y = y + h / 2
+        distance = self.get_lidar_distance(center_x, image_width)
         
-        merged_w = max_x - min_x
-        merged_h = max_y - min_y
-        merged_area = sum([det['area'] for det in cluster])
-        avg_distance = np.mean([det['distance'] for det in cluster if det['distance']])
+        # Distance is allowed to be None or any value - safety first!
         
+        # Stage 5: Size-distance consistency (when distance available)
+        size_ratio = 1.0  # Default assumption if no distance
+        if distance and distance > 0:
+            expected_pixel_width = self.calculate_expected_pixel_size(distance)
+            if expected_pixel_width > 0:
+                size_ratio = w / expected_pixel_width
+                # Only reject if size is extremely inconsistent (very permissive)
+                if size_ratio < 0.2 or size_ratio > 5.0:  # Much wider tolerance
+                    return None
+        
+        # Stage 6: Calculate confidence score (distance influences confidence, not rejection)
+        confidence = self.calculate_confidence_score({
+            'aspect_ratio': aspect_ratio,
+            'extent': extent,
+            'circularity': circularity,
+            'size_ratio': size_ratio,
+            'distance': distance,
+            'area': area
+        })
+        
+        if confidence < self.min_confidence:
+            return None
+        
+        # All tests passed - create detection
         return {
-            'center_x': min_x + merged_w / 2,
-            'center_y': min_y + merged_h / 2,
-            'bbox': (min_x, min_y, merged_w, merged_h),
-            'area': merged_area,
-            'distance': avg_distance,
-            'cluster_size': len(cluster)
+            'center_x': center_x,
+            'center_y': center_y,
+            'bbox': (x, y, w, h),
+            'area': area,
+            'distance': distance,
+            'aspect_ratio': aspect_ratio,
+            'extent': extent,
+            'circularity': circularity,
+            'size_ratio': size_ratio,
+            'confidence': confidence
         }
     
-    def validate_detection_size(self, detection):
-        """Light size validation - more permissive"""
-        if detection['distance'] is None or detection['distance'] <= 0:
-            return True  # Accept if no distance data
+    def calculate_confidence_score(self, metrics):
+        """
+        Calculate confidence score - distance influences confidence but doesn't reject
+        Safety first: ALL potential trees are detected, confidence varies by likelihood
+        """
+        confidence = 0.0
         
-        expected_pixel_width = self.calculate_expected_pixel_size(detection['distance'])
-        actual_pixel_width = detection['bbox'][2]
+        # Aspect ratio score (prefer vertical rectangles)
+        ideal_aspect = 1.5
+        aspect_score = 1.0 - abs(metrics['aspect_ratio'] - ideal_aspect) / ideal_aspect
+        confidence += max(0, aspect_score) * 0.3
         
-        if expected_pixel_width <= 0:
-            return True
+        # Extent score (prefer well-filled bounding boxes)
+        extent_score = metrics['extent']
+        confidence += extent_score * 0.2
         
-        size_ratio = actual_pixel_width / expected_pixel_width
-        return (1 - self.size_tolerance) <= size_ratio <= (1 + self.size_tolerance)
+        # Size consistency score (when distance available)
+        size_score = 1.0 - abs(1.0 - metrics['size_ratio']) / 2.0  # More permissive
+        confidence += max(0, size_score) * 0.2
+        
+        # Distance score - influences confidence but doesn't reject
+        distance = metrics.get('distance', None)
+        if distance and distance > 0:
+            if 0.5 <= distance <= 3.0:
+                distance_score = 1.0  # Ideal range
+            elif 0.1 <= distance <= 0.5 or 3.0 <= distance <= 6.0:
+                distance_score = 0.7  # Less ideal but acceptable
+            else:
+                distance_score = 0.4  # Low confidence but still detected
+        else:
+            distance_score = 0.5  # Unknown distance gets neutral score
+        
+        confidence += distance_score * 0.3
+        
+        return min(1.0, confidence)
+    
+    def filter_by_separation(self, detections):
+        """Remove trees that are too close together (likely duplicates)"""
+        if len(detections) <= 1:
+            return detections
+        
+        # Sort by confidence (keep higher confidence detections)
+        sorted_detections = sorted(detections, key=lambda d: d['confidence'], reverse=True)
+        
+        filtered = []
+        
+        for detection in sorted_detections:
+            # Check if this detection is too close to any accepted detection
+            too_close = False
+            
+            for accepted in filtered:
+                # Calculate real-world distance between detections
+                if detection['distance'] and accepted['distance']:
+                    # Approximate world-space separation using distance and pixel separation
+                    pixel_sep = np.sqrt((detection['center_x'] - accepted['center_x'])**2 + 
+                                      (detection['center_y'] - accepted['center_y'])**2)
+                    
+                    # Rough conversion to world distance (this is approximate)
+                    avg_distance = (detection['distance'] + accepted['distance']) / 2
+                    approx_world_sep = (pixel_sep / 640) * (avg_distance * np.tan(np.radians(30)))
+                    
+                    if approx_world_sep < self.min_separation:
+                        too_close = True
+                        break
+            
+            if not too_close:
+                filtered.append(detection)
+        
+        return filtered
     
     def update_tree_trackers(self, current_detections):
-        """
-        Update tree trackers with current detections
-        This maintains persistent Tree IDs
-        """
-        # Mark all trackers as not updated this frame
-        for tracker in self.tree_trackers.values():
-            tracker.detection_count = 0  # Reset for this frame
+        """Update tree trackers - only accept high-confidence detections"""
         
-        # Try to match each detection to existing trackers
+        # Reset detection counts for this frame
+        for tracker in self.tree_trackers.values():
+            tracker.detection_count = 0
+        
+        # Try to match detections to existing trackers
         unmatched_detections = []
         
         for detection in current_detections:
             matched = False
-            
-            # Find best matching tracker
             best_match = None
             best_distance = float('inf')
             
@@ -306,36 +388,38 @@ class ImprovedTreeDetector(Node):
                         best_match = tracker
             
             if best_match:
-                # Update existing tracker
                 best_match.update(detection, self.frame_count)
                 matched = True
             else:
-                # No match found, add to unmatched
                 unmatched_detections.append(detection)
         
-        # Create new trackers for unmatched detections
+        # Create new trackers for high confidence detections (safety-conscious threshold)
         for detection in unmatched_detections:
-            new_tracker = TreeTracker(self.next_tree_id, detection)
-            new_tracker.last_seen_frame = self.frame_count
-            self.tree_trackers[self.next_tree_id] = new_tracker
-            
-            self.get_logger().info(f'🆕 NEW TREE DETECTED! Assigned Tree #{self.next_tree_id}')
-            self.next_tree_id += 1
+            if detection['confidence'] >= 0.5:  # Lowered for safety - detect more potential trees
+                new_tracker = TreeTracker(self.next_tree_id, detection)
+                new_tracker.last_seen_frame = self.frame_count
+                self.tree_trackers[self.next_tree_id] = new_tracker
+                
+                distance_info = f" at {detection['distance']:.2f}m" if detection['distance'] else " (distance unknown)"
+                self.get_logger().info(f'🆕 TREE DETECTED! Tree #{self.next_tree_id}{distance_info} (confidence: {detection["confidence"]:.2f})')
+                self.next_tree_id += 1
+            else:
+                self.get_logger().debug(f'Low confidence detection rejected: {detection["confidence"]:.2f}')
     
     def cleanup_inactive_trackers(self):
-        """Remove trackers that haven't been seen recently"""
+        """Remove trackers more aggressively"""
         inactive_ids = []
         
         for tree_id, tracker in self.tree_trackers.items():
-            if not tracker.is_active(self.frame_count, max_frames_missing=15):  # 0.5 seconds
+            if not tracker.is_active(self.frame_count, max_frames_missing=5):  # Very strict
                 inactive_ids.append(tree_id)
         
         for tree_id in inactive_ids:
-            self.get_logger().info(f'❌ Tree #{tree_id} lost from view')
+            self.get_logger().info(f'❌ Tree #{tree_id} lost (strict timeout)')
             del self.tree_trackers[tree_id]
     
     def publish_detection_results(self):
-        """Publish detection results for navigation"""
+        """Publish detection results"""
         active_trees = [t for t in self.tree_trackers.values() if t.is_active(self.frame_count)]
         
         tree_msg = String()
@@ -343,38 +427,37 @@ class ImprovedTreeDetector(Node):
         self.tree_pub.publish(tree_msg)
     
     def log_current_state(self):
-        """Log current detection state with persistent IDs"""
+        """Log current state less frequently"""
         active_trees = [t for t in self.tree_trackers.values() if t.is_active(self.frame_count)]
         
         if active_trees:
-            self.get_logger().info(f'🌳 ACTIVE TREES: {len(active_trees)} total')
+            self.get_logger().info(f'🌳 CONFIRMED TREES: {len(active_trees)} total')
             
             for tracker in sorted(active_trees, key=lambda x: x.id):
                 status = "STABLE" if tracker.is_stable else "TRACKING"
+                confidence_info = f"conf:{tracker.confidence_score:.2f}"
                 distance_info = f"dist:{tracker.distance:.2f}m" if tracker.distance else "dist:unknown"
                 
-                self.get_logger().info(f'  Tree #{tracker.id}: {status} | {distance_info} | detections:{tracker.total_detections}')
+                self.get_logger().info(f'  Tree #{tracker.id}: {status} | {confidence_info} | {distance_info} | detections:{tracker.total_detections}')
         else:
-            self.get_logger().info('No trees currently detected - scanning...')
+            self.get_logger().info('No confirmed trees - scanning...')
     
     def publish_tree_markers(self, cv_image):
-        """Publish markers for all tracked trees"""
+        """Publish markers for confirmed trees only"""
         marker_array = MarkerArray()
         
         for tracker in self.tree_trackers.values():
-            if tracker.is_active(self.frame_count):
-                # Get world coordinates
+            if tracker.is_active(self.frame_count) and tracker.is_stable:  # Only stable trees get markers
                 world_coords = self.get_world_coordinates(tracker.position[0], cv_image.shape[1])
                 
                 if world_coords and world_coords[2] is not None:
                     lidar_x, lidar_y, map_x, map_y = world_coords
                     tracker.map_position = (map_x, map_y)
                     
-                    # Create marker
                     marker = Marker()
                     marker.header.frame_id = 'map'
                     marker.header.stamp = self.get_clock().now().to_msg()
-                    marker.ns = 'persistent_trees'
+                    marker.ns = 'confirmed_trees'
                     marker.id = tracker.id
                     marker.type = Marker.CYLINDER
                     marker.action = Marker.ADD
@@ -388,70 +471,63 @@ class ImprovedTreeDetector(Node):
                     marker.scale.y = 0.25
                     marker.scale.z = 1.0
                     
-                    # Color based on stability
-                    if tracker.is_stable:
-                        # Stable trees are brown
-                        marker.color.r = 0.6
-                        marker.color.g = 0.3
-                        marker.color.b = 0.1
-                        marker.color.a = 0.9
-                    else:
-                        # New trees are orange
-                        marker.color.r = 1.0
-                        marker.color.g = 0.5
-                        marker.color.b = 0.0
-                        marker.color.a = 0.7
+                    # Green for confirmed trees
+                    marker.color.r = 0.0
+                    marker.color.g = 0.8
+                    marker.color.b = 0.0
+                    marker.color.a = 0.9
                     
                     marker_array.markers.append(marker)
         
         self.marker_array_pub.publish(marker_array)
     
-    def create_realtime_debug_image(self, original_image, current_detections):
-        """Create debug image showing real-time tracking"""
+    def create_debug_image(self, original_image, current_detections):
+        """Create debug image showing only high-confidence detections"""
         debug_img = original_image.copy()
         
-        # Draw current detections
+        # Draw current high-confidence detections
         for detection in current_detections:
             x, y, w, h = detection['bbox']
-            cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 255), 2)  # Yellow for current
-            cv2.putText(debug_img, "CURRENT", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            confidence = detection['confidence']
+            
+            # Color based on confidence
+            if confidence >= 0.8:
+                color = (0, 255, 0)  # Green for high confidence
+            elif confidence >= 0.6:
+                color = (0, 255, 255)  # Yellow for medium confidence
+            else:
+                color = (0, 0, 255)  # Red for low confidence
+            
+            cv2.rectangle(debug_img, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(debug_img, f"CONF:{confidence:.2f}", (x, y - 5), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         
-        # Draw tracked trees with persistent IDs
+        # Draw confirmed tracked trees
         for tracker in self.tree_trackers.values():
             if tracker.is_active(self.frame_count):
-                x, y = int(tracker.position[0] - 50), int(tracker.position[1] - 50)
-                w, h = 100, 100  # Approximate box for visualization
+                x, y = int(tracker.position[0] - 40), int(tracker.position[1] - 40)
+                w, h = 80, 80
                 
-                # Color based on stability
-                color = (0, 255, 0) if tracker.is_stable else (0, 165, 255)  # Green=stable, Orange=new
-                
+                color = (0, 255, 0) if tracker.is_stable else (0, 165, 255)
                 cv2.rectangle(debug_img, (x, y), (x + w, y + h), color, 3)
-                cv2.circle(debug_img, (int(tracker.position[0]), int(tracker.position[1])), 10, color, -1)
+                cv2.circle(debug_img, (int(tracker.position[0]), int(tracker.position[1])), 8, color, -1)
                 
-                # Label with persistent ID
                 label = f"TREE #{tracker.id}"
-                status = " (STABLE)" if tracker.is_stable else " (NEW)"
-                cv2.putText(debug_img, label + status, (x, y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                
-                # Technical info
-                tech_info = f"detections:{tracker.total_detections}"
-                if tracker.distance:
-                    tech_info += f" {tracker.distance:.1f}m"
-                cv2.putText(debug_img, tech_info, (x, y + h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                cv2.putText(debug_img, label, (x, y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         
         # Status overlay
         active_count = len([t for t in self.tree_trackers.values() if t.is_active(self.frame_count)])
         stable_count = len([t for t in self.tree_trackers.values() if t.is_active(self.frame_count) and t.is_stable])
         
-        cv2.putText(debug_img, f"🌳 Active Trees: {active_count} | Stable: {stable_count}", 
-                    (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(debug_img, f"🌳 Confirmed Trees: {active_count} | Stable: {stable_count}", 
+                    (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        cv2.putText(debug_img, f"Frame: {self.frame_count} | Current detections: {len(current_detections)}", 
+        cv2.putText(debug_img, f"High-conf detections: {len([d for d in current_detections if d['confidence'] >= 0.8])}", 
                     (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         return debug_img
     
-    # Keep utility methods from previous version
+    # Keep utility methods
     def get_lidar_distance(self, center_x, image_width):
         """Get LiDAR distance for a pixel coordinate"""
         if self.scan is None:
@@ -477,7 +553,7 @@ class ImprovedTreeDetector(Node):
         angular_size = 2 * np.arctan(self.expected_tree_width_meters / (2 * distance))
         pixels_per_radian = image_width_pixels / camera_fov
         expected_pixels = angular_size * pixels_per_radian
-        return max(expected_pixels, 10)
+        return max(expected_pixels, 8)
     
     def get_world_coordinates(self, center_x, image_width):
         """Convert pixel coordinates to world coordinates"""
@@ -530,9 +606,10 @@ def main(args=None):
     
     try:
         tree_detector = ImprovedTreeDetector()
-        tree_detector.get_logger().info('🚀 Starting Improved tree detector with persistent tracking...')
-        # tree_detector.get_logger().info('🌳 Trees get persistent IDs: Tree #1, Tree #2, etc.')
-        # tree_detector.get_logger().info('🆕 New trees appear immediately, stable after 3 detections')
+        tree_detector.get_logger().info('🚀 Starting IMPROVED tree detector for real-world environments...')
+        # tree_detector.get_logger().info('🎯 Strict shape filtering to eliminate background false positives')
+        # tree_detector.get_logger().info('⚠️  SAFETY FIRST: Detects trees at ALL distances to prevent collisions')
+        # tree_detector.get_logger().info('🌳 All potential cylindrical trees detected, filtered by confidence')
         rclpy.spin(tree_detector)
     except KeyboardInterrupt:
         tree_detector.get_logger().info('Improved tree detector shutting down...')
