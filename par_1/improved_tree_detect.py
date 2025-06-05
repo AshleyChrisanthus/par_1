@@ -24,7 +24,7 @@ class ImprovedTreeDetector(Node):
     """
     
     def __init__(self):
-        super().__init__('improved_tree_detector')
+        super().__init__('improved_tree_detect')
         
         # Create OpenCV bridge
         self.bridge = CvBridge()
