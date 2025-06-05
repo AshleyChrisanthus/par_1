@@ -52,13 +52,13 @@ class TreeTracker:
 
 class ImprovedTreeDetector(Node):
     """
-    Restrictive tree detector specifically tuned for brown cylinders in real-world environments
+    Improved tree detector specifically tuned for brown cylinders in real-world environments
     Much more selective to avoid false positives from background objects
     """
     
     def __init__(self):
         super().__init__('improved_tree_detect')
-        
+
         # Create OpenCV bridge
         self.bridge = CvBridge()
         self.scan = None
@@ -125,9 +125,9 @@ class ImprovedTreeDetector(Node):
         self.size_tolerance = 0.4  # Only 40% tolerance (much more strict)
         
         self.get_logger().info('Restrictive Tree Detector initialized!')
-        self.get_logger().info('🎯 Tuned for brown cylinders in real-world environments')
-        self.get_logger().info('🚫 Strict shape filtering to avoid background false positives')
-        self.get_logger().info('⚠️  SAFETY FIRST: Detects trees at ALL distances to prevent collisions')
+        # self.get_logger().info('🎯 Tuned for brown cylinders in real-world environments')
+        # self.get_logger().info('🚫 Strict shape filtering to avoid background false positives')
+        # self.get_logger().info('⚠️  SAFETY FIRST: Detects trees at ALL distances to prevent collisions')
         
     def scan_callback(self, msg):
         """Store LiDAR scan."""
@@ -209,7 +209,7 @@ class ImprovedTreeDetector(Node):
                 candidate_detections.append(detection)
         
         # Stage 5: Spatial filtering (remove trees too close together)
-        final_detections = self.filter_by_separation(validated_detections)
+        final_detections = self.filter_by_separation(candidate_detections)
         
         return final_detections
     
