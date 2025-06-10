@@ -39,14 +39,14 @@ class MacadamiaStateMachine:
         if current_state in self.end_states:
             self.states[current_state](cargo)
 
-class MacadamiaFieldRobot(Node):
+class MacadamiaNavigation(Node):
     """
     Navigation system for 2x2 macadamia field using brown cylinders
     Adapted from agricultural tree row following algorithm
     """
     
     def __init__(self):
-        super().__init__('macadamia_field_robot')
+        super().__init__('macadamia_navigation')
         
         self.get_logger().info("🌰 Macadamia Field Robot Initializing...")
         self.get_logger().info("🎯 Mission: Navigate 2x2 brown cylinder field")
@@ -368,7 +368,7 @@ def main(args=None):
     
     try:
         # Create and run the robot
-        robot = MacadamiaFieldRobot()
+        robot = MacadamiaNavigation()
         
         # Give time for all systems to initialize
         time.sleep(2)
