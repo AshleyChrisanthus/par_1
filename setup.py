@@ -36,6 +36,7 @@ setup(
             'macadamia_navigation = par_1.macadamia_navigation:main',
             'macadamia_scanner = par_1.macadamia_scanner:main',
             'tree_detector_node = par_1.tree_detector_node:main',
+            'orb_tree_detector_node = par_1.orb_tree_detector_node'
         ],
     },
 )
