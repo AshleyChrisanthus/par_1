@@ -230,7 +230,8 @@ class TreeDetectorNode(Node):
             
             kernel_open = np.ones((5, 5), np.uint8) 
             mask_opened = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
-            kernel_close = np.ones((7, 7), np.uint8)
+            # kernel_close = np.ones((7, 7), np.uint8)
+            kernel_close = np.ones((15, 15), np.uint8)
             mask_closed = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel_close, iterations=2)
             
             contours, _ = cv2.findContours(mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
