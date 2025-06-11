@@ -213,6 +213,7 @@ class TreeDetectorNode(Node):
             return False
 
     def image_callback(self, msg):
+        self.get_logger().info("Image callback triggered!", throttle_duration_sec=1) # Add this
         if self.scan is None:
             return
             
@@ -278,6 +279,7 @@ class TreeDetectorNode(Node):
                 self.handle_no_trees_detected()
             
             debug_img = self.create_debug_image(cv_image, detected_trees_in_frame, mask_closed)
+            self.get_logger().info("Publishing debug image...", throttle_duration_sec=1) # Add this
             self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img, encoding='bgr8'))
                 
         except Exception as e:
