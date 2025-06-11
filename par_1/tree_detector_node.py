@@ -169,6 +169,35 @@ class TreeDetectorNode(Node): # Renamed class for clarity
         except Exception as e:
             self.get_logger().error(f'Error in image_callback: {str(e)}')
     
+    # def handle_trees_detected(self, cv_image, trees_data):
+    #     num_detected = len(trees_data)
+    #     status_msg_str = f"trees_detected:{num_detected}"
+        
+    #     status_msg = String()
+    #     status_msg.data = status_msg_str
+    #     self.tree_detection_pub.publish(status_msg)
+        
+    #     # if self.frame_count - self.last_detection_frame > 30: # Log detailed info less frequently
+    #     if num_detected > 0 and (self.frame_count - self.last_detection_frame > 15 or self.total_detection_events == 0) : # Log more often if trees are seen
+    #         self.total_detection_events += 1
+    #         self.get_logger().info(f'TREES DETECTED! Found {num_detected} tree(s) | Event #{self.total_detection_events}')
+    #         self.last_detection_frame = self.frame_count
+            
+    #         for i, tree_info in enumerate(trees_data):
+    #             center_x_pixel = tree_info['center_pixel'][0]
+    #             self.get_logger().info(f"  Tree #{i+1} at pixel X: {center_x_pixel:.0f}, Area: {tree_info['area']:.0f}, AR: {tree_info['aspect_ratio']:.2f}, Solidity: {tree_info['solidity']:.2f}")
+                
+    #             # Get world coordinates and publish markers
+    #             world_coords = self.get_world_coordinates(center_x_pixel, cv_image.shape[1]) # image_width
+    #             if world_coords:
+    #                 lidar_x, lidar_y, map_x, map_y = world_coords
+    #                 self.get_logger().info(f"    Lidar Coords: ({lidar_x:.2f}, {lidar_y:.2f}), Map Coords: ({map_x:.2f}, {map_y:.2f})")
+                    
+    #                 # Publish RViz marker only if it's a "new" tree in map frame
+    #                 if not self.is_duplicate_map_tree((map_x, map_y)):
+    #                     self.publish_tree_marker_in_map(map_x, map_y, len(self.detected_trees_map_positions))
+    #                     self.detected_trees_map_positions.append((map_x, map_y))
+
     def handle_trees_detected(self, cv_image, trees_data):
         num_detected = len(trees_data)
         status_msg_str = f"trees_detected:{num_detected}"
@@ -177,26 +206,43 @@ class TreeDetectorNode(Node): # Renamed class for clarity
         status_msg.data = status_msg_str
         self.tree_detection_pub.publish(status_msg)
         
-        if self.frame_count - self.last_detection_frame > 30: # Log detailed info less frequently
+        # Log detailed info less frequently, or every time if num_detected > 0
+        if num_detected > 0 and (self.frame_count - self.last_detection_frame > 15 or self.total_detection_events == 0) : # Log more often if trees are seen
             self.total_detection_events += 1
             self.get_logger().info(f'TREES DETECTED! Found {num_detected} tree(s) | Event #{self.total_detection_events}')
             self.last_detection_frame = self.frame_count
             
             for i, tree_info in enumerate(trees_data):
                 center_x_pixel = tree_info['center_pixel'][0]
-                self.get_logger().info(f"  Tree #{i+1} at pixel X: {center_x_pixel:.0f}, Area: {tree_info['area']:.0f}, AR: {tree_info['aspect_ratio']:.2f}, Solidity: {tree_info['solidity']:.2f}")
                 
-                # Get world coordinates and publish markers
-                world_coords = self.get_world_coordinates(center_x_pixel, cv_image.shape[1]) # image_width
-                if world_coords:
-                    lidar_x, lidar_y, map_x, map_y = world_coords
-                    self.get_logger().info(f"    Lidar Coords: ({lidar_x:.2f}, {lidar_y:.2f}), Map Coords: ({map_x:.2f}, {map_y:.2f})")
+                # Basic info before world_coords
+                basic_info_str = (f"  Tree #{i+1} at PxX: {center_x_pixel:.0f}, "
+                                  f"Area: {tree_info['area']:.0f}, "
+                                  f"AR: {tree_info['aspect_ratio']:.2f}, "
+                                  f"Solidity: {tree_info['solidity']:.2f}")
+
+                world_coords_result = self.get_world_coordinates(center_x_pixel, cv_image.shape[1]) # image_width
+                
+                if world_coords_result:
+                    # Unpack 5 values now
+                    lidar_x, lidar_y, map_x, map_y, raw_dist = world_coords_result 
                     
-                    # Publish RViz marker only if it's a "new" tree in map frame
-                    if not self.is_duplicate_map_tree((map_x, map_y)):
-                        self.publish_tree_marker_in_map(map_x, map_y, len(self.detected_trees_map_positions))
-                        self.detected_trees_map_positions.append((map_x, map_y))
-    
+                    # Prepare strings for lidar and map coordinates, handling None for map
+                    lidar_str = f"({lidar_x:.2f},{lidar_y:.2f})" # lidar_x, lidar_y should always be valid if raw_dist is
+                    map_str = f"({map_x:.2f},{map_y:.2f})" if map_x is not None and map_y is not None else "(Map N/A)"
+                    
+                    # Log all info including the raw distance
+                    self.get_logger().info(f"{basic_info_str}, Dist: {raw_dist:.2f}m, LidarXY:{lidar_str}, MapXY:{map_str}")
+                    
+                    if map_x is not None and map_y is not None: # Check before using for marker
+                        if not self.is_duplicate_map_tree((map_x, map_y)):
+                            self.publish_tree_marker_in_map(map_x, map_y, len(self.detected_trees_map_positions))
+                            self.detected_trees_map_positions.append((map_x, map_y))
+                else:
+                    self.get_logger().info(f"{basic_info_str}, Dist: N/A (World coords failed)")
+        elif num_detected == 0: # Ensure this branch from the original logic is covered
+            self.handle_no_trees_detected() # Or call the no_trees_detected method if appropriate
+
     def handle_no_trees_detected(self):
         status_msg = String()
         status_msg.data = "trees_detected:0"
@@ -207,40 +253,93 @@ class TreeDetectorNode(Node): # Renamed class for clarity
             self.get_logger().info('No trees detected in current view - scanning...')
             self.last_no_detection_log_time = current_time
     
+    # def get_world_coordinates(self, center_x_pixel, image_width):
+    #     if self.scan is None: return None
+    #     try:
+    #         normalized_x = center_x_pixel / image_width
+    #         angle = self.scan.angle_min + normalized_x * (self.scan.angle_max - self.scan.angle_min)
+            
+    #         index = int((angle - self.scan.angle_min) / self.scan.angle_increment)
+    #         if not (0 <= index < len(self.scan.ranges)):
+    #             self.get_logger().warn(f'LiDAR index {index} out of range ({len(self.scan.ranges)}) for pixel X {center_x_pixel}')
+    #             return None
+            
+    #         distance = self.scan.ranges[index]
+    #         if not (self.scan.range_min <= distance <= self.scan.range_max and np.isfinite(distance)):
+    #             # self.get_logger().warn(f'Invalid LiDAR distance: {distance:.2f} at index {index}')
+    #             return None
+            
+    #         point_lidar_frame = PointStamped()
+    #         point_lidar_frame.header.frame_id = self.scan.header.frame_id
+    #         point_lidar_frame.header.stamp = self.scan.header.stamp # Use scan time for TF
+    #         point_lidar_frame.point.x = distance * math.cos(angle)
+    #         point_lidar_frame.point.y = distance * math.sin(angle)
+    #         point_lidar_frame.point.z = 0.0 # Assume trees are on the ground plane for this
+            
+    #         map_coords = self.transform_to_map_frame(point_lidar_frame)
+    #         if map_coords:
+    #             map_x, map_y = map_coords
+    #             return (point_lidar_frame.point.x, point_lidar_frame.point.y, map_x, map_y)
+    #         else: # Could not transform
+    #             return (point_lidar_frame.point.x, point_lidar_frame.point.y, None, None)
+                
+    #     except Exception as e:
+    #         self.get_logger().error(f'Error in get_world_coordinates: {str(e)}')
+    #         return None
+    
     def get_world_coordinates(self, center_x_pixel, image_width):
-        if self.scan is None: return None
+        if self.scan is None:
+            self.get_logger().warn("Scan data missing in get_world_coordinates.", throttle_duration_sec=5)
+            return None # Return None if scan is missing
+        if image_width <= 0:
+            self.get_logger().error(f"Invalid image_width: {image_width}")
+            return None # Return None for invalid image width
+
         try:
-            normalized_x = center_x_pixel / image_width
-            angle = self.scan.angle_min + normalized_x * (self.scan.angle_max - self.scan.angle_min)
-            
+            center_x_pixel = np.clip(center_x_pixel, 0, image_width -1)
+            normalized_x = center_x_pixel / float(image_width) 
+            angle_span = self.scan.angle_max - self.scan.angle_min
+            angle = self.scan.angle_min + normalized_x * angle_span
             index = int((angle - self.scan.angle_min) / self.scan.angle_increment)
+            
             if not (0 <= index < len(self.scan.ranges)):
-                self.get_logger().warn(f'LiDAR index {index} out of range ({len(self.scan.ranges)}) for pixel X {center_x_pixel}')
-                return None
+                self.get_logger().warn(f'LiDAR index {index} out of range ({len(self.scan.ranges)}). Angle: {math.degrees(angle):.1f}deg, NormX: {normalized_x:.2f}, PxX: {center_x_pixel}')
+                return None # Return None if index is out of range
             
-            distance = self.scan.ranges[index]
-            if not (self.scan.range_min <= distance <= self.scan.range_max and np.isfinite(distance)):
-                # self.get_logger().warn(f'Invalid LiDAR distance: {distance:.2f} at index {index}')
-                return None
+            # This is the raw distance from LiDAR for the calculated angle
+            raw_lidar_distance = self.scan.ranges[index] 
+
+            if not (self.scan.range_min <= raw_lidar_distance <= self.scan.range_max and np.isfinite(raw_lidar_distance)):
+                # self.get_logger().debug(f'Invalid LiDAR distance: {raw_lidar_distance:.2f} at index {index} for angle {math.degrees(angle):.1f}deg.')
+                return None # Return None if distance is invalid
             
+            # If we reach here, raw_lidar_distance is valid.
+            # self.get_logger().info(f"Valid LiDAR point: PxX:{center_x_pixel}, NormX:{normalized_x:.3f}, Angle:{math.degrees(angle):.1f}deg, Index:{index}, Dist:{raw_lidar_distance:.2f}m")
+
             point_lidar_frame = PointStamped()
             point_lidar_frame.header.frame_id = self.scan.header.frame_id
-            point_lidar_frame.header.stamp = self.scan.header.stamp # Use scan time for TF
-            point_lidar_frame.point.x = distance * math.cos(angle)
-            point_lidar_frame.point.y = distance * math.sin(angle)
-            point_lidar_frame.point.z = 0.0 # Assume trees are on the ground plane for this
+            point_lidar_frame.header.stamp = self.scan.header.stamp 
+            point_lidar_frame.point.x = raw_lidar_distance * math.cos(angle)
+            point_lidar_frame.point.y = raw_lidar_distance * math.sin(angle)
+            point_lidar_frame.point.z = 0.0 
             
             map_coords = self.transform_to_map_frame(point_lidar_frame)
+
             if map_coords:
                 map_x, map_y = map_coords
-                return (point_lidar_frame.point.x, point_lidar_frame.point.y, map_x, map_y)
-            else: # Could not transform
-                return (point_lidar_frame.point.x, point_lidar_frame.point.y, None, None)
+                # Return all values including the raw_lidar_distance
+                return (point_lidar_frame.point.x, point_lidar_frame.point.y, map_x, map_y, raw_lidar_distance)
+            else: 
+                # Still return raw_lidar_distance even if map transform fails
+                return (point_lidar_frame.point.x, point_lidar_frame.point.y, None, None, raw_lidar_distance)
                 
         except Exception as e:
-            self.get_logger().error(f'Error in get_world_coordinates: {str(e)}')
-            return None
+            self.get_logger().error(f'Error in get_world_coordinates: {type(e).__name__} - {str(e)}')
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            return None # Return None on exception
     
+
     def transform_to_map_frame(self, point_stamped_msg):
         try:
             # Use a reasonable timeout for can_transform and lookup_transform
