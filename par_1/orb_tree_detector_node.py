@@ -23,7 +23,7 @@ class OrbTreeDetectorNode(Node):
         # Declare parameters
         # self.declare_parameter('reference_image_filename_pattern', REFERENCE_IMAGE_FILENAME_PATTERN_DEFAULT)
         self.declare_parameter('reference_image_folder', REFERENCE_IMAGE_FOLDER_DEFAULT)
-        self.declare_parameter('reference_image_prefix', 'reference_cylinder_view') # e.g. 'reference_cylinder_view' for 'reference_cylinder_view1.jpg'
+        self.declare_parameter('reference_image_prefix', 'tree_ref_image') # e.g. 'reference_cylinder_view' for 'reference_cylinder_view1.jpg'
 
         self.declare_parameter('min_match_count', MIN_MATCH_COUNT_DEFAULT)
         self.declare_parameter('lowes_ratio', LOWES_RATIO_TEST_THRESHOLD_DEFAULT)
