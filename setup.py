@@ -33,10 +33,9 @@ setup(
             'macadamia_field_explorer = par_1.macadamia_field_explorer:main',
             'improved_tree_detect = par_1.improved_tree_detect:main',
             'tree_row_follower = par_1.tree_row_follower:main',
-            'macadamia_navigation = par_1.macadamia_navigation:main',
-            'macadamia_scanner = par_1.macadamia_scanner:main',
             'tree_detector_node = par_1.tree_detector_node:main',
-            'orb_tree_detector_node = par_1.orb_tree_detector_node'
+            'orb_tree_detector_node = par_1.orb_tree_detector_node',
+            'tree_detector_node_gaber = par_1.tree_detector_node_gaber:main',
         ],
     },
 )
