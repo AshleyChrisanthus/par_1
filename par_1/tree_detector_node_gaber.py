@@ -64,8 +64,10 @@ class TreeDetectorNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # HSV Color Range for Brown Cylinders
-        self.brown_hsv_lower = np.array([5, 60, 20])   # Tuned slightly from before based on bark image
-        self.brown_hsv_upper = np.array([30, 200, 150]) # Value might be lower for dark bark
+        # self.brown_hsv_lower = np.array([5, 60, 20])   # Tuned slightly from before based on bark image
+        # self.brown_hsv_upper = np.array([30, 200, 150]) # Value might be lower for dark bark
+        self.brown_hsv_lower = np.array([0, 29, 0]) 
+        self.brown_hsv_upper = np.array([179, 255, 62])
 
         # Contour Filtering Parameters
         self.min_contour_area = 500    
@@ -229,7 +231,7 @@ class TreeDetectorNode(Node):
             kernel_open = np.ones((5, 5), np.uint8) 
             mask_opened = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
             kernel_close = np.ones((7, 7), np.uint8)
-            mask_closed = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel_close, iterations=1)
+            mask_closed = cv2.morphologyEx(mask_opened, cv2.MORPH_CLOSE, kernel_close, iterations=2)
             
             contours, _ = cv2.findContours(mask_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
@@ -337,33 +339,122 @@ class TreeDetectorNode(Node):
             self.get_logger().info('No trees detected in current view - scanning...')
             self.last_no_detection_log_time = current_time
     
-    def create_debug_image(self, original_image, detected_trees_data, processed_mask):
+    # def create_debug_image(self, original_image, detected_trees_data, processed_mask):
+    #     debug_img = original_image.copy()
+        
+    #     # Optionally show Gabor response for the *first detected tree's ROI* for tuning
+    #     # This is a bit hacky for a general debug image, but useful for tuning Gabor.
+    #     gabor_response_to_show = getattr(self, 'last_gabor_response_img', None)
+    #     if gabor_response_to_show is not None and len(detected_trees_data) > 0:
+    #         first_tree_bbox = detected_trees_data[0]['bbox']
+    #         x,y,w,h = first_tree_bbox
+    #         if gabor_response_to_show.shape[0] == h and gabor_response_to_show.shape[1] == w: # Ensure it matches
+    #             # Normalize for visualization
+    #             vis_gabor = cv2.normalize(np.abs(gabor_response_to_show), None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+    #             vis_gabor_bgr = cv2.cvtColor(vis_gabor, cv2.COLOR_GRAY2BGR)
+    #             debug_img[y:y+h, x:x+w] = cv2.addWeighted(debug_img[y:y+h, x:x+w], 0.5, vis_gabor_bgr, 0.5, 0)
+
+
+    #     for i, tree_info in enumerate(detected_trees_data):
+    #         x, y, w, h = tree_info['bbox']
+    #         color = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)][i % 6]
+    #         cv2.rectangle(debug_img, (x, y), (x + w, y + h), color, 2)
+    #         label = f"T{i+1} G:{tree_info.get('gabor_mean',0.0):.0f}" # Show Gabor mean
+    #         cv2.putText(debug_img, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+        
+    #     cv2.putText(debug_img, f"F:{self.frame_count}", (10,20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255),1)
+    #     cv2.putText(debug_img, f"Trees:{len(detected_trees_data)}", (10,40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0) if detected_trees_data else (255,0,0),1)
+        
+    #     return debug_img
+
+        def create_debug_image(self, original_image, detected_trees_data, processed_mask):
         debug_img = original_image.copy()
         
-        # Optionally show Gabor response for the *first detected tree's ROI* for tuning
-        # This is a bit hacky for a general debug image, but useful for tuning Gabor.
+        # --- Option 1: Visualize the processed binary mask (mask_closed) ---
+        # This is VERY useful for tuning HSV and morphology
+        if processed_mask is not None:
+            mask_viz_bgr = cv2.cvtColor(processed_mask, cv2.COLOR_GRAY2BGR)
+            # You can choose to overlay it or show it side-by-side or in a corner
+            # Overlay example:
+            debug_img = cv2.addWeighted(debug_img, 0.7, mask_viz_bgr, 0.3, 0)
+            # Or to put it in a corner (e.g., top-left)
+            # h_mask, w_mask = processed_mask.shape[:2]
+            # scale_factor = 0.25 # Scale down the mask display
+            # display_h, display_w = int(h_mask * scale_factor), int(w_mask * scale_factor)
+            # if display_h > 0 and display_w > 0:
+            #     resized_mask_bgr = cv2.resize(mask_viz_bgr, (display_w, display_h))
+            #     if debug_img.shape[0] >= display_h and debug_img.shape[1] >= display_w:
+            #        debug_img[0:display_h, 0:display_w] = resized_mask_bgr
+
+
+        # --- Option 2: Visualize Gabor response on the FIRST detected tree's ROI ---
+        # Useful for tuning Gabor parameters.
+        # It uses the Gabor response image that was stored on `self` during verify_tree_pattern
         gabor_response_to_show = getattr(self, 'last_gabor_response_img', None)
         if gabor_response_to_show is not None and len(detected_trees_data) > 0:
-            first_tree_bbox = detected_trees_data[0]['bbox']
-            x,y,w,h = first_tree_bbox
-            if gabor_response_to_show.shape[0] == h and gabor_response_to_show.shape[1] == w: # Ensure it matches
-                # Normalize for visualization
-                vis_gabor = cv2.normalize(np.abs(gabor_response_to_show), None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-                vis_gabor_bgr = cv2.cvtColor(vis_gabor, cv2.COLOR_GRAY2BGR)
-                debug_img[y:y+h, x:x+w] = cv2.addWeighted(debug_img[y:y+h, x:x+w], 0.5, vis_gabor_bgr, 0.5, 0)
+            # Get the ROI coordinates from the first detected tree
+            first_tree_bbox = detected_trees_data[0]['bbox'] 
+            x_roi, y_roi, w_roi, h_roi = first_tree_bbox
+            
+            # Ensure the stored Gabor response matches the dimensions of this ROI
+            # (verify_tree_pattern is called for each candidate, so last_gabor_response_img
+            # will correspond to the last candidate processed, which might not be the first one
+            # *finally* added to detected_trees_data if pattern check was off then on.
+            # This part is a bit tricky for robustly showing the Gabor for a *specific* displayed tree.
+            # A cleaner way would be to store Gabor response per *accepted* tree_info.
+            # For simplicity now, we assume it's for one of the detected ones.
+            # Let's assume the Gabor response we have is for the first tree displayed.
+            
+            if gabor_response_to_show.shape[0] == h_roi and gabor_response_to_show.shape[1] == w_roi:
+                # Normalize the absolute Gabor response for visualization (0-255, 8-bit)
+                vis_gabor_abs = np.abs(gabor_response_to_show)
+                # print(f"Gabor min: {np.min(vis_gabor_abs)}, max: {np.max(vis_gabor_abs)}") # Debug Gabor range
+                if np.max(vis_gabor_abs) > 0: # Avoid division by zero if all responses are 0
+                    vis_gabor_norm = cv2.normalize(vis_gabor_abs, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                else:
+                    vis_gabor_norm = np.zeros_like(vis_gabor_abs, dtype=cv2.CV_8U)
+
+                vis_gabor_bgr = cv2.cvtColor(vis_gabor_norm, cv2.COLOR_GRAY2BGR)
+                
+                # Overlay Gabor response on the ROI of the first detected tree in the debug image
+                if y_roi + h_roi <= debug_img.shape[0] and x_roi + w_roi <= debug_img.shape[1]:
+                    roi_slice = debug_img[y_roi : y_roi + h_roi, x_roi : x_roi + w_roi]
+                    # Ensure dimensions match exactly if there were any off-by-one issues
+                    if roi_slice.shape == vis_gabor_bgr.shape:
+                         debug_img[y_roi : y_roi + h_roi, x_roi : x_roi + w_roi] = cv2.addWeighted(roi_slice, 0.5, vis_gabor_bgr, 0.5, 0)
+                    # else:
+                    #    self.get_logger().warn(f"Shape mismatch for Gabor overlay: ROI {roi_slice.shape}, Gabor {vis_gabor_bgr.shape}")
 
 
+        # --- Draw Bounding Boxes and Labels for ALL detected trees ---
         for i, tree_info in enumerate(detected_trees_data):
             x, y, w, h = tree_info['bbox']
-            color = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)][i % 6]
+            # Use different colors for each tree in this frame for better distinction
+            # Cycle through a list of BGR colors
+            box_colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+            color = box_colors[i % len(box_colors)]
+            
             cv2.rectangle(debug_img, (x, y), (x + w, y + h), color, 2)
-            label = f"T{i+1} G:{tree_info.get('gabor_mean',0.0):.0f}" # Show Gabor mean
-            cv2.putText(debug_img, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            
+            # Prepare label text
+            label_gabor_mean = tree_info.get('gabor_mean', 0.0) # Get Gabor mean if available
+            label_text = f"T{i+1} AR:{tree_info['aspect_ratio']:.1f} S:{tree_info['solidity']:.2f}"
+            if label_gabor_mean > 0.001 : # Only show Gabor if it was likely calculated
+                 label_text += f" G:{label_gabor_mean:.0f}"
+
+            cv2.putText(debug_img, label_text, (x, y - 7), # Adjusted y position for label 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
         
-        cv2.putText(debug_img, f"F:{self.frame_count}", (10,20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255),1)
-        cv2.putText(debug_img, f"Trees:{len(detected_trees_data)}", (10,40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0) if detected_trees_data else (255,0,0),1)
+        # --- Add General Status Information ---
+        cv2.putText(debug_img, f"Frame: {self.frame_count}", (10, 20), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 230), 1, cv2.LINE_AA)
+        status_text_color = (0, 255, 0) if detected_trees_data else (0, 0, 255) # Green if trees, Red if none
+        cv2.putText(debug_img, f"Trees in view: {len(detected_trees_data)}", (10, 45), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_text_color, 1, cv2.LINE_AA)
         
         return debug_img
+
+
 
 # main function (same as before)
 def main(args=None):
