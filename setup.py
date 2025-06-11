@@ -34,7 +34,7 @@ setup(
             'improved_tree_detect = par_1.improved_tree_detect:main',
             'tree_row_follower = par_1.tree_row_follower:main',
             'tree_detector_node = par_1.tree_detector_node:main',
-            'orb_tree_detector_node = par_1.orb_tree_detector_node',
+            'orb_tree_detector_node = par_1.orb_tree_detector_node:main',
             'tree_detector_node_gaber = par_1.tree_detector_node_gaber:main',
         ],
     },
