@@ -23,7 +23,7 @@ class OrbTreeDetectorNode(Node):
         self.declare_parameter('reference_image_filename', REFERENCE_IMAGE_FILENAME_DEFAULT)
         self.declare_parameter('min_match_count', MIN_MATCH_COUNT_DEFAULT)
         self.declare_parameter('lowes_ratio', LOWES_RATIO_TEST_THRESHOLD_DEFAULT)
-        self.declare_parameter('camera_topic', '/camera/image_raw') # Default camera topic
+        self.declare_parameter('camera_topic', '/oak/rgb/image_raw') # Default camera topic
         self.declare_parameter('publish_debug_image', True)
 
         # Get parameters
