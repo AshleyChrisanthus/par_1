@@ -368,7 +368,7 @@ class TreeDetectorNode(Node):
         
     #     return debug_img
 
-        def create_debug_image(self, original_image, detected_trees_data, processed_mask):
+    def create_debug_image(self, original_image, detected_trees_data, processed_mask):
         debug_img = original_image.copy()
         
         # --- Option 1: Visualize the processed binary mask (mask_closed) ---
