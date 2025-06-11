@@ -254,10 +254,11 @@ class TreeDetectorNode(Node):
                     # --- New: Pattern Verification Step ---
                     # Extract the ROI from the original BGR image
                     roi = cv_image[y_bbox : y_bbox + h_bbox, x_bbox : x_bbox + w_bbox]
-                    
-                    if not self.verify_tree_pattern(roi):
-                        # self.get_logger().debug("Contour failed pattern verification.")
-                        continue # Skip this contour if pattern doesn't match
+
+                    # temporarilu disabling pattern verrification
+                    # if not self.verify_tree_pattern(roi):
+                    #     # self.get_logger().debug("Contour failed pattern verification.")
+                    #     continue # Skip this contour if pattern doesn't match
                     # --- End of Pattern Verification ---
 
                     # If all filters pass, including pattern:
@@ -302,13 +303,29 @@ class TreeDetectorNode(Node):
                 self.get_logger().info(f"  Tree #{i+1} PxX:{center_x_pixel:.0f} A:{tree_info['area']:.0f} AR:{tree_info['aspect_ratio']:.2f} S:{tree_info['solidity']:.2f} GaborM:{tree_info.get('gabor_mean', 0.0):.1f}")
                 
                 world_coords = self.get_world_coordinates(center_x_pixel, cv_image.shape[1]) 
+                # if world_coords:
+                #     lidar_x, lidar_y, map_x, map_y = world_coords
+                #     self.get_logger().info(f"    Lidar:({lidar_x:.2f},{lidar_y:.2f}), Map:({map_x:.2f},{map_y:.2f})")
+                #     if map_x is not None and map_y is not None: # Check if map coords are valid
+                #         if not self.is_duplicate_map_tree((map_x, map_y)):
+                #             self.publish_tree_marker_in_map(map_x, map_y, len(self.detected_trees_map_positions))
+                #             self.detected_trees_map_positions.append((map_x, map_y))
+                # Inside handle_trees_detected method, within the loop:
                 if world_coords:
                     lidar_x, lidar_y, map_x, map_y = world_coords
-                    self.get_logger().info(f"    Lidar:({lidar_x:.2f},{lidar_y:.2f}), Map:({map_x:.2f},{map_y:.2f})")
-                    if map_x is not None and map_y is not None: # Check if map coords are valid
+                    
+                    # Prepare strings for lidar and map coordinates, handling None
+                    lidar_str = f"({lidar_x:.2f},{lidar_y:.2f})" if lidar_x is not None and lidar_y is not None else "(Lidar N/A)"
+                    map_str = f"({map_x:.2f},{map_y:.2f})" if map_x is not None and map_y is not None else "(Map N/A)"
+                    
+                    self.get_logger().info(f"    Lidar:{lidar_str}, Map:{map_str}") # Corrected logging
+                    
+                    if map_x is not None and map_y is not None: # Check before using for marker
                         if not self.is_duplicate_map_tree((map_x, map_y)):
                             self.publish_tree_marker_in_map(map_x, map_y, len(self.detected_trees_map_positions))
                             self.detected_trees_map_positions.append((map_x, map_y))
+                else:
+                    self.get_logger().info(f"    World coordinates not available for tree.")
     
     def handle_no_trees_detected(self): # Same as before
         status_msg = String(); status_msg.data = "trees_detected:0"
