@@ -23,8 +23,8 @@ class TreeDetectorNode(Node): # Renamed class for clarity
         # Subscribers
         self.image_sub = self.create_subscription(
             Image,
-            # 'oak/rgb/image_raw',
-            '/camera/color/image_raw',
+            'oak/rgb/image_raw',
+            # '/camera/color/image_raw',
             self.image_callback,
             10)
         
