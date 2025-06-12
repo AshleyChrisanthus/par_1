@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo # Added CameraInfo
+from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PointStamped
@@ -10,42 +10,41 @@ from cv_bridge import CvBridge, CvBridgeError
 import cv2
 import numpy as np
 import tf2_ros
-import tf2_geometry_msgs # For do_transform_point
+import tf2_geometry_msgs 
 import math
 
-# For synchronizing messages
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 
 class TreeDetectorNode(Node):
     def __init__(self):
-        super().__init__('tree_detector_node_depth') # New node name
+        super().__init__('tree_detector_node_depth') # New node name for this test
 
-        self.bridge = CvBridge() # Bridge for color images
-        self.depth_bridge = CvBridge() # Bridge for depth images
+        self.bridge = CvBridge()
+        self.depth_bridge = CvBridge()
 
         self.fx = None; self.fy = None; self.cx = None; self.cy = None
-        self.camera_optical_frame_id = "camera_link" # Default, will be overridden by CameraInfo
+        # This will store the optical frame ID of the RGB camera, used for projection
+        self.rgb_camera_optical_frame_id = "rgb_camera_optical_frame" # Default, will be updated
 
         # --- Subscribers using message_filters ---
-        self.color_image_sub = Subscriber(self, Image, '/oak/rgb/image_raw')
+        self.color_image_sub = Subscriber(self, Image, '/oak/rgb/image_raw') # For color detection
         
-        # ATTEMPT 1: Try to get depth aligned with /oak/rgb/image_raw by subscribing to its base name
-        # We hope image_transport uses the /oak/rgb/image_raw/compressedDepth plugin for this.
-        self.depth_image_sub = Subscriber(self, Image, '/oak/rgb/image_raw') 
-        # Note: If this doesn't work, the next attempt would be to subscribe to '/oak/stereo/image_raw'
-        # and use '/oak/stereo/camera_info', which complicates alignment with RGB detections.
+        # ATTEMPT 2: Try to get depth from the stereo camera's depth output
+        # We subscribe to its base name, hoping image_transport uses '/oak/stereo/image_raw/compressedDepth'
+        self.depth_image_sub = Subscriber(self, Image, '/oak/stereo/image_raw') 
 
-        self.camera_info_sub = self.create_subscription(
+        # CameraInfo for the RGB camera (since detections are on RGB image)
+        self.rgb_camera_info_sub = self.create_subscription(
             CameraInfo,
-            '/oak/rgb/camera_info', # Camera info for the RGB camera
-            self.camera_info_callback,
-            rclpy.qos.QoSProfile(depth=1, reliability=rclpy.qos.ReliabilityPolicy.RELIABLE, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL) # For latched CameraInfo
+            '/oak/rgb/camera_info', 
+            self.rgb_camera_info_callback, 
+            rclpy.qos.QoSProfile(depth=1, reliability=rclpy.qos.ReliabilityPolicy.RELIABLE, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL)
         )
 
         self.time_synchronizer = ApproximateTimeSynchronizer(
             [self.color_image_sub, self.depth_image_sub],
-            queue_size=20, # Adjusted queue size
-            slop=0.15      # Adjusted slop
+            queue_size=20, 
+            slop=0.2 # Increased slop a bit more, can be tuned down later
         )
         self.time_synchronizer.registerCallback(self.synchronized_images_callback)
 
@@ -59,15 +58,18 @@ class TreeDetectorNode(Node):
         self.brown_hsv_lower = np.array([0, 29, 0])      # From your HSV tuning
         self.brown_hsv_upper = np.array([179, 255, 62])  # From your HSV tuning
         self.min_contour_area = 1000
-        self.max_contour_area = 80000
-        self.min_aspect_ratio = 1.2
-        self.max_aspect_ratio = 10.0
-        self.min_solidity = 0.70
+        self.max_contour_area = 80000 # Increased from 50k
+        self.min_aspect_ratio = 1.2   # Relaxed from 1.5
+        self.max_aspect_ratio = 10.0  # Increased from 8.0
+        self.min_solidity = 0.65      # Relaxed from 0.70 or 0.80
+
         self.kernel_open_size = (5,5)
-        self.kernel_close_size = (15,15) 
+        self.kernel_close_size = (15,15) # Start larger
         self.morph_open_iterations = 1
-        self.morph_close_iterations = 2
+        self.morph_close_iterations = 3 # Increased iterations for closing
+
         self.depth_window_size = 5 
+        self.MAX_TREE_DEPTH_DISTANCE = 6.0 # meters, trees further than this are ignored by depth
 
         self.total_detection_events = 0
         self.frame_count = 0 
@@ -75,100 +77,116 @@ class TreeDetectorNode(Node):
         self.detected_trees_map_positions = []
 
         self.get_logger().info(f"{self.get_name()} Initialized!")
-        self.get_logger().info("Attempting to get depth via image_transport from base topic of /oak/rgb/image_raw (expecting /compressedDepth).")
-        self.get_logger().info("Waiting for camera_info and synchronized images...")
+        self.get_logger().info("Attempting to get depth via image_transport from /oak/stereo/image_raw (expecting /compressedDepth).")
+        self.get_logger().info("Waiting for RGB camera_info and synchronized images...")
 
-    def camera_info_callback(self, msg):
+    def rgb_camera_info_callback(self, msg): # For RGB camera's intrinsics
         if self.fx is None: 
             self.fx = msg.k[0]; self.fy = msg.k[4]
             self.cx = msg.k[2]; self.cy = msg.k[5]
-            self.camera_optical_frame_id = msg.header.frame_id
-            self.get_logger().info(f"RGB Camera intrinsics received from '{msg.header.frame_id}': fx={self.fx:.2f}, fy={self.fy:.2f}, cx={self.cx:.2f}, cy={self.cy:.2f}")
-            # self.camera_info_sub.destroy() # Optional
+            self.rgb_camera_optical_frame_id = msg.header.frame_id # Store RGB optical frame
+            self.get_logger().info(f"RGB Camera intrinsics received from '{self.rgb_camera_optical_frame_id}': fx={self.fx:.2f}, fy={self.fy:.2f}, cx={self.cx:.2f}, cy={self.cy:.2f}")
 
     def get_distance_from_depth_pixel(self, x_pixel, y_pixel, depth_image):
         if depth_image is None: return None
-        h, w = depth_image.shape[:2]
-        x_pixel, y_pixel = int(round(x_pixel)), int(round(y_pixel))
+        h_depth, w_depth = depth_image.shape[:2]
+        x_pixel_int, y_pixel_int = int(round(x_pixel)), int(round(y_pixel))
 
-        if not (0 <= y_pixel < h and 0 <= x_pixel < w):
-            self.get_logger().warn(f"Pixel ({x_pixel},{y_pixel}) out of depth bounds ({w}x{h})", throttle_duration_sec=5)
+        # IMPORTANT: If depth_image has different resolution than color_image,
+        # x_pixel, y_pixel (from color image) need to be scaled to depth_image coordinates.
+        # This assumes for now they are roughly aligned or same resolution.
+        # If not, you'd do:
+        # x_depth_px = int(round(x_pixel * (w_depth / w_color_image)))
+        # y_depth_px = int(round(y_pixel * (h_depth / h_color_image)))
+        # For now, using x_pixel_int, y_pixel_int directly and checking bounds.
+
+        if not (0 <= y_pixel_int < h_depth and 0 <= x_pixel_int < w_depth):
+            self.get_logger().warn(f"Pixel ({x_pixel_int},{y_pixel_int}) for depth lookup out of depth image bounds ({w_depth}x{h_depth}). Original color px: ({x_pixel:.1f},{y_pixel:.1f})", throttle_duration_sec=5)
             return None
 
         half_win = self.depth_window_size // 2
-        y_start, y_end = max(0, y_pixel - half_win), min(h, y_pixel + half_win + 1)
-        x_start, x_end = max(0, x_pixel - half_win), min(w, x_pixel + half_win + 1)
+        y_start, y_end = max(0, y_pixel_int - half_win), min(h_depth, y_pixel_int + half_win + 1)
+        x_start, x_end = max(0, x_pixel_int - half_win), min(w_depth, x_pixel_int + half_win + 1)
         depth_patch = depth_image[y_start:y_end, x_start:x_end]
 
         distance_meters = None
+        if not depth_patch.size > 0: # Empty patch
+            return None
+
         if depth_image.dtype == np.uint16: # Typically mm
             valid_depths = depth_patch[depth_patch > 0] 
-            if valid_depths.size > self.depth_window_size: # Require some valid points in window
+            if valid_depths.size > self.depth_window_size // 2 : # Require at least a few valid points
                 median_depth_mm = np.median(valid_depths)
                 distance_meters = float(median_depth_mm) / 1000.0
         elif depth_image.dtype == np.float32: # Typically meters
-            valid_depths = depth_patch[np.isfinite(depth_patch) & (depth_patch > 0.01)] # Add small min dist
-            if valid_depths.size > self.depth_window_size: # Require some valid points
+            valid_depths = depth_patch[np.isfinite(depth_patch) & (depth_patch > 0.01)]
+            if valid_depths.size > self.depth_window_size // 2:
                 distance_meters = float(np.median(valid_depths))
         else:
             self.get_logger().error(f"Unsupported depth image dtype: {depth_image.dtype}", throttle_duration_sec=10)
             return None
 
-        MAX_TREE_DEPTH_DISTANCE = 7.0 # Increased slightly
-        if distance_meters is not None and (distance_meters <= 0.01 or distance_meters > MAX_TREE_DEPTH_DISTANCE) :
+        if distance_meters is not None and (distance_meters <= 0.01 or distance_meters > self.MAX_TREE_DEPTH_DISTANCE) :
+            # self.get_logger().debug(f"Depth distance {distance_meters:.2f}m out of range or too far.", throttle_duration_sec=2)
             return None
         return distance_meters
 
     def project_pixel_to_3d_camera_frame(self, x_pixel, y_pixel, distance_m):
-        if self.fx is None: return None
+        if self.fx is None: return None # Using RGB camera intrinsics (self.fx, self.cx etc.)
         if distance_m is None or distance_m <= 0: return None
         z_cam = distance_m
         x_cam = (x_pixel - self.cx) * z_cam / self.fx
         y_cam = (y_pixel - self.cy) * z_cam / self.fy
         return (x_cam, y_cam, z_cam)
 
-    def synchronized_images_callback(self, color_msg, depth_msg_from_filter):
+    def synchronized_images_callback(self, color_msg_from_filter, depth_msg_from_filter):
         self.frame_count += 1
         
-        self.get_logger().debug(f"--- Frame {self.frame_count} Sync Callback ---")
-        # Log topic anme only once or a few times to avoid spam
-        if self.frame_count < 5 or self.frame_count % 100 == 0 :
-            color_topic = color_msg._connection_header['topic'] if hasattr(color_msg, '_connection_header') and color_msg._connection_header else 'N/A'
+        if self.frame_count < 5 or self.frame_count % 60 == 0 : # Log less frequently after startup
+            self.get_logger().info(f"--- Frame {self.frame_count} Sync Callback ---")
+            color_topic = color_msg_from_filter._connection_header['topic'] if hasattr(color_msg_from_filter, '_connection_header') and color_msg_from_filter._connection_header else 'N/A'
             depth_topic = depth_msg_from_filter._connection_header['topic'] if hasattr(depth_msg_from_filter, '_connection_header') and depth_msg_from_filter._connection_header else 'N/A'
-            self.get_logger().info(f"Color Topic (filter): {color_topic}, Encoding: {color_msg.encoding}")
-            self.get_logger().info(f"Depth Topic (filter): {depth_topic}, Encoding: {depth_msg_from_filter.encoding}, Dtype via cv_bridge will show actual pixel type")
-            self.get_logger().info(f"Depth Header Frame ID: {depth_msg_from_filter.header.frame_id}, Stamp Diff (color-depth): {(color_msg.header.stamp.sec - depth_msg_from_filter.header.stamp.sec) + (color_msg.header.stamp.nanosec - depth_msg_from_filter.header.stamp.nanosec)/1e9:.4f}s")
+            self.get_logger().info(f"Color Topic (filter): {color_topic}, Encoding: {color_msg_from_filter.encoding}")
+            self.get_logger().info(f"Depth Topic (filter): {depth_topic}, Encoding: {depth_msg_from_filter.encoding}") # This is encoding from sensor_msgs/Image
+            self.get_logger().info(f"Depth Header Frame ID: {depth_msg_from_filter.header.frame_id}, Stamp Diff (color-depth): {(color_msg_from_filter.header.stamp.sec - depth_msg_from_filter.header.stamp.sec) + (color_msg_from_filter.header.stamp.nanosec - depth_msg_from_filter.header.stamp.nanosec)/1e9:.4f}s")
 
-        if self.fx is None:
-            self.get_logger().warn("Waiting for camera intrinsics...", throttle_duration_sec=5)
+        if self.fx is None: # Using RGB camera intrinsics
+            self.get_logger().warn("Waiting for RGB camera intrinsics...", throttle_duration_sec=5)
             return
 
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding='bgr8')
+            cv_image = self.bridge.imgmsg_to_cv2(color_msg_from_filter, desired_encoding='bgr8')
             
-            # Critical Check: Is depth_msg_from_filter actually depth data?
-            # Common depth encodings are '16UC1' (mm), '32FC1' (m).
-            # If it's 'bgr8' or 'rgb8', then image_transport gave us the color image again for depth.
+            # CRITICAL CHECK for depth message encoding after image_transport processing
             if "bgr" in depth_msg_from_filter.encoding.lower() or \
                "rgb" in depth_msg_from_filter.encoding.lower() or \
-               depth_msg_from_filter.encoding == color_msg.encoding :
-                self.get_logger().error(f"Depth message encoding '{depth_msg_from_filter.encoding}' is same as color or a color format! Check image_transport setup or OAK-D depth publishing. Subscribing to same base topic for color and depth might be problematic if not handled correctly by driver's image_transport plugins for depth variants.", throttle_duration_sec=10)
-                # Publish color image as debug and return to avoid crashing on wrong depth data
-                self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, encoding='bgr8'))
+               "yuv" in depth_msg_from_filter.encoding.lower() or \
+               "mono8" == depth_msg_from_filter.encoding.lower() and "depth" not in depth_topic.lower() : # mono8 could be intensity or misidentified depth
+                self.get_logger().error(f"Depth message encoding '{depth_msg_from_filter.encoding}' from topic '{depth_topic}' "
+                                        f"is a color/intensity format! Expecting '16UC1' or '32FC1' from image_transport. "
+                                        f"Check OAK-D depth publishing and image_transport plugins.", throttle_duration_sec=10)
+                self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, encoding='bgr8')) # Publish color as debug
                 return
 
-            depth_image = self.depth_bridge.imgmsg_to_cv2(depth_msg_from_filter, desired_encoding="passthrough")
-            if self.frame_count < 5 or self.frame_count % 100 == 0 :
-                 self.get_logger().info(f"Depth CV image from bridge: shape={depth_image.shape}, dtype={depth_image.dtype}")
+            depth_image_cv = self.depth_bridge.imgmsg_to_cv2(depth_msg_from_filter, desired_encoding="passthrough")
+            if self.frame_count < 5 or self.frame_count % 60 == 0 :
+                 self.get_logger().info(f"Depth CV image from bridge: shape={depth_image_cv.shape}, dtype={depth_image_cv.dtype}")
+                 # Log a sample depth value (e.g., center pixel)
+                 h_d, w_d = depth_image_cv.shape[:2]
+                 center_depth_val = depth_image_cv[h_d//2, w_d//2]
+                 self.get_logger().info(f"Sample center depth value: {center_depth_val} (type: {depth_image_cv.dtype})")
 
 
         except CvBridgeError as e:
             self.get_logger().error(f'CvBridge error in sync_callback: {e}')
             return
-        except Exception as e:
-            self.get_logger().error(f'Generic error processing images in sync_callback: {type(e).__name__} - {e}')
+        except Exception as e_main:
+            self.get_logger().error(f'Generic error processing images in sync_callback: {type(e_main).__name__} - {e_main}')
+            import traceback
+            self.get_logger().error(traceback.format_exc())
             return
 
+        # --- Visual Detection Logic ---
         hsv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
         color_mask = cv2.inRange(hsv_image, self.brown_hsv_lower, self.brown_hsv_upper)
         kernel_open = np.ones(self.kernel_open_size, np.uint8)
@@ -183,15 +201,23 @@ class TreeDetectorNode(Node):
                 area = cv2.contourArea(contour)
                 if not (self.min_contour_area < area < self.max_contour_area): continue
                 x_bbox, y_bbox, w_bbox, h_bbox = cv2.boundingRect(contour)
+                # Additional check: ignore very wide or very short bounding boxes that are unlikely to be trees
+                if w_bbox > h_bbox * 2 or h_bbox > w_bbox * 12 : continue # Filter out extreme aspect ratios early
+                
                 aspect_ratio = float(h_bbox) / w_bbox if w_bbox > 0 else 0
                 if not (self.min_aspect_ratio < aspect_ratio < self.max_aspect_ratio): continue
+                
                 hull = cv2.convexHull(contour); hull_area = cv2.contourArea(hull)
                 solidity = float(area) / hull_area if hull_area > 0 else 0
                 if solidity < self.min_solidity: continue
 
                 center_x_pixel = x_bbox + w_bbox / 2.0
                 center_y_pixel = y_bbox + h_bbox / 2.0
-                direct_depth_distance = self.get_distance_from_depth_pixel(center_x_pixel, center_y_pixel, depth_image)
+                
+                # Pass the cv_image dimensions for potential scaling if depth image has different resolution
+                # For now, get_distance_from_depth_pixel handles this internally if logic is added
+                direct_depth_distance = self.get_distance_from_depth_pixel(center_x_pixel, center_y_pixel, depth_image_cv)
+
 
                 if direct_depth_distance is not None:
                     detected_trees_in_frame.append({
@@ -202,25 +228,25 @@ class TreeDetectorNode(Node):
                     })
 
         if detected_trees_in_frame:
-            self.handle_trees_detected_with_depth(detected_trees_in_frame, color_msg.header.stamp)
+            self.handle_trees_detected_with_depth(detected_trees_in_frame, color_msg_from_filter.header.stamp) # Pass color_msg stamp
         
-        # Pass cv_image for drawing, detected_trees_in_frame for boxes, mask_closed for mask overlay
         debug_img_to_publish = self.create_debug_image(cv_image, detected_trees_in_frame, mask_closed) 
         try:
             self.debug_img_pub.publish(self.bridge.cv2_to_imgmsg(debug_img_to_publish, encoding='bgr8'))
-        except CvBridgeError as e:
-            self.get_logger().error(f"Error publishing debug image: {e}")
+        except CvBridgeError as e_bridge_debug:
+             self.get_logger().error(f"CvBridge error publishing debug image: {e_bridge_debug}")
         except Exception as e_pub:
              self.get_logger().error(f"Unexpected error publishing debug image: {type(e_pub).__name__} - {e_pub}")
 
 
     def handle_trees_detected_with_depth(self, trees_data, image_stamp):
+        # (This function is largely the same as the previous version, ensuring it uses
+        # self.rgb_camera_optical_frame_id when creating PointStamped for TF)
         num_detected = len(trees_data)
         status_msg = String(); status_msg.data = f"trees_detected:{num_detected}"
         self.tree_detection_pub.publish(status_msg)
 
         current_time = self.get_clock().now()
-        # Log more frequently if trees are seen or if it's the first few detections
         if num_detected > 0 and ((current_time - self.last_detection_log_time).nanoseconds / 1e9 > 1.0 or self.total_detection_events < 5) :
             self.total_detection_events += 1
             log_msg_header = f'TREES DETECTED ({num_detected}) Evt#{self.total_detection_events}'
@@ -233,10 +259,10 @@ class TreeDetectorNode(Node):
                                   f"AR:{tree_info['aspect_ratio']:.1f} S:{tree_info['solidity']:.2f} D:{depth_dist:.2f}m")
                 point_3d_cam = self.project_pixel_to_3d_camera_frame(px_x, px_y, depth_dist)
 
-                if point_3d_cam and self.camera_optical_frame_id:
+                if point_3d_cam and self.rgb_camera_optical_frame_id: # Ensure we use RGB optical frame ID
                     x_cam, y_cam, z_cam = point_3d_cam
                     point_cam_stamped = PointStamped()
-                    point_cam_stamped.header.frame_id = self.camera_optical_frame_id
+                    point_cam_stamped.header.frame_id = self.rgb_camera_optical_frame_id # Use RGB frame
                     point_cam_stamped.header.stamp = image_stamp 
                     point_cam_stamped.point.x = x_cam; point_cam_stamped.point.y = y_cam; point_cam_stamped.point.z = z_cam
                     map_coords_tuple = self.transform_to_map_frame(point_cam_stamped)
@@ -250,28 +276,24 @@ class TreeDetectorNode(Node):
                     else:
                         self.get_logger().info(f"{basic_info_str}, CamXYZ:({x_cam:.2f},{y_cam:.2f},{z_cam:.2f}), MapXY:(TF Fail)")
                 else:
-                    self.get_logger().info(f"{basic_info_str}, CamXYZ:(Projection Fail or No Intrinsics)")
+                    self.get_logger().info(f"{basic_info_str}, CamXYZ:(Projection Fail or No RGB Intrinsics/Frame ID)")
 
-    def transform_to_map_frame(self, point_stamped_msg):
+    def transform_to_map_frame(self, point_stamped_msg): # Mostly same
         try:
-            timeout_duration = rclpy.duration.Duration(seconds=0.05) # Reduced timeout
-            # Check if target frame exists and if source frame exists in TF buffer
+            timeout_duration = rclpy.duration.Duration(seconds=0.05) 
             if not self.tf_buffer.can_transform('map', point_stamped_msg.header.frame_id, point_stamped_msg.header.stamp, timeout=timeout_duration):
-                # self.get_logger().warn(f'TF: Cannot transform from {point_stamped_msg.header.frame_id} to map (can_transform=false). Buffer time: {self.tf_buffer.get_latest_common_time("map", point_stamped_msg.header.frame_id)}', throttle_duration_sec=5)
+                self.get_logger().warn(f'TF: Cannot transform from {point_stamped_msg.header.frame_id} to map (can_transform=false).', throttle_duration_sec=5)
                 return None
             
-            transform_stamped = self.tf_buffer.lookup_transform(
-                'map', point_stamped_msg.header.frame_id,
-                point_stamped_msg.header.stamp, timeout=timeout_duration)
+            transform_stamped = self.tf_buffer.lookup_transform('map', point_stamped_msg.header.frame_id, point_stamped_msg.header.stamp, timeout=timeout_duration)
             transformed_point_stamped = tf2_geometry_msgs.do_transform_point(point_stamped_msg, transform_stamped)
             return (transformed_point_stamped.point.x, transformed_point_stamped.point.y)
-        except tf2_ros.TransformException as e: # Catch specific TF exceptions
-            # self.get_logger().warn(f'TF exception transforming {point_stamped_msg.header.frame_id} to map: {type(e).__name__} - {e}', throttle_duration_sec=5)
+        except tf2_ros.TransformException as e: 
+            self.get_logger().warn(f'TF exception transforming {point_stamped_msg.header.frame_id} to map: {type(e).__name__} - {e}', throttle_duration_sec=5)
             return None
-        except Exception as e_gen: # Catch any other unexpected errors
+        except Exception as e_gen: 
             self.get_logger().error(f'Unexpected error in transform_to_map_frame: {type(e_gen).__name__} - {e_gen}', throttle_duration_sec=5)
             return None
-
 
     def is_duplicate_map_tree(self, new_map_pos, threshold=0.5): # Same
         new_x, new_y = new_map_pos
@@ -283,15 +305,14 @@ class TreeDetectorNode(Node):
         marker = Marker(); marker.header.frame_id = 'map'; marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'detected_tree_cylinders'; marker.id = marker_id; marker.type = Marker.CYLINDER
         marker.action = Marker.ADD; marker.pose.position.x = map_x; marker.pose.position.y = map_y
-        marker.pose.position.z = 0.5; marker.pose.orientation.w = 1.0
-        marker.scale.x = 0.20; marker.scale.y = 0.20; marker.scale.z = 1.0
+        marker.pose.position.z = 0.5; marker.pose.orientation.w = 1.0 # Make z=0.5 for cylinder center if height is 1.0
+        marker.scale.x = 0.20; marker.scale.y = 0.20; marker.scale.z = 1.0 # Example size
         marker.color.r = 0.6; marker.color.g = 0.3; marker.color.b = 0.1; marker.color.a = 0.8
         self.tree_marker_pub.publish(marker)
 
-    def create_debug_image(self, original_image, detected_trees_data, processed_mask):
-        # This is the same full version from my previous response.
+    def create_debug_image(self, original_image, detected_trees_data, processed_mask): # Same as previous full example
         debug_img = original_image.copy()
-        if processed_mask is not None:
+        if processed_mask is not None: 
             mask_viz_bgr = cv2.cvtColor(processed_mask, cv2.COLOR_GRAY2BGR)
             debug_img = cv2.addWeighted(debug_img, 0.7, mask_viz_bgr, 0.3, 0)
 
@@ -317,7 +338,7 @@ def main(args=None):
         tree_detector = TreeDetectorNode()
         rclpy.spin(tree_detector)
     except KeyboardInterrupt:
-        tree_detector.get_logger().info(f"{tree_detector.get_name()} shutting down...")
+        tree_detector.get_logger().info(f"{tree_detector.get_name()} shutting down...") # Use get_name()
     finally:
         if 'tree_detector' in locals() and rclpy.ok():
             tree_detector.destroy_node()
