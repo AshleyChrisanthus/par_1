@@ -2,116 +2,146 @@
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
-from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Twist
+from sensor_msgs.msg import LaserScan
 import tf_transformations
-
-"""
-A ROS2 script to command a ROSBot 2 to navigate a pre-defined serpentine path
-through a simulated macadamia orchard.
-
-This script uses the Nav2 Simple Commander API to send a sequence of goals.
-
-Prerequisites:
-1. A fully functional Nav2 stack is running.
-2. A map of the environment (with the 'trees' as obstacles) has been created and is
-   loaded by the map_server.
-3. AMCL or another localization system is running and the robot is well-localized.
-"""
+import math
 
 class MissionPlanner(Node):
     def __init__(self):
         super().__init__('macadamia_planner')
-        self.navigator = BasicNavigator()
 
-    def run_mission(self):
-        """The main entry point for the mission."""
-        self.get_logger().info("Waiting for Nav2 to be active...")
-        # You can use 'amcl' or 'bt_navigator' depending on your Nav2 setup
-        self.navigator.waitUntilNav2Active(localizer='amcl')
-        self.get_logger().info("Nav2 is active. Starting mission.")
+        # --- Publishers and Subscribers ---
+        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.odom_subscriber = self.create_subscription(
+            Odometry, '/odom', self.odom_callback, 10)
+        self.scan_subscriber = self.create_subscription(
+            LaserScan, '/scan', self.scan_callback, 10)
 
-        # --- Define the sequence of waypoints for the serpentine path ---
-        # Frame of reference is the 'map' frame.
-        # Orientation is in quaternions (x, y, z, w).
-        # We use a helper function to convert from Euler angles (yaw) for clarity.
+        # --- Robot State Variables ---
+        self.current_pose = None
+        self.current_yaw = 0.0
+        self.obstacle_detected = False
 
-        # Goal 1: Go to the end of the first lane.
-        # Position: x=-0.25 (center of lane 1), y=2.5 (past the last tree)
-        # Orientation: Facing forward (90 degrees or pi/2 radians)
-        q1 = tf_transformations.quaternion_from_euler(0, 0, 1.57) # (roll, pitch, yaw)
-        goal1 = self.create_pose_stamped(-0.25, 2.5, q1)
-
-        # Goal 2: Positioned at the end of the second lane, ready to drive back.
-        # Nav2 will execute the 90-degree turn, move sideways, and 90-degree turn.
-        # Position: x=0.25 (center of lane 2), y=2.5
-        # Orientation: Facing backward (-90 degrees or -pi/2 radians)
-        q2 = tf_transformations.quaternion_from_euler(0, 0, -1.57)
-        goal2 = self.create_pose_stamped(0.25, 2.5, q2)
-
-        # Goal 3: Drive back down the second lane to the starting line.
-        # Position: x=0.25, y=0.0
-        # Orientation: Still facing backward (-90 degrees or -pi/2 radians)
-        goal3 = self.create_pose_stamped(0.25, 0.0, q2) # Use the same orientation as goal2
-
-        # --- The list of goals to execute ---
-        mission_goals = [goal1, goal2, goal3]
-
-        # --- Execute the mission ---
-        for i, goal in enumerate(mission_goals):
-            self.get_logger().info(f"--- Sending Goal {i+1}/{len(mission_goals)} ---")
-            self.navigator.goToPose(goal)
-
-            # Wait until the goal is done
-            while not self.navigator.isTaskComplete():
-                feedback = self.navigator.getFeedback()
-                if feedback:
-                    # You can print feedback if you want, e.g., distance remaining
-                    pass
-
-            # Check the result
-            result = self.navigator.getResult()
-            if result == TaskResult.SUCCEEDED:
-                self.get_logger().info(f"Goal {i+1} succeeded!")
-            elif result == TaskResult.CANCELED:
-                self.get_logger().warn(f"Goal {i+1} was canceled! Aborting mission.")
-                return
-            elif result == TaskResult.FAILED:
-                self.get_logger().error(f"Goal {i+1} failed! Aborting mission.")
-                return
-            else:
-                self.get_logger().error("Goal has an invalid return status! Aborting mission.")
-                return
+        # --- Mission Plan ---
+        # Define your waypoints based on your drawing (P1, P2, P3, etc.)
+        # These are (x, y) coordinates from the odometry frame.
+        self.waypoints = [
+            (1.0, 0.0),   # P1: Go forward 2 meters
+            (1.0, 0.5),   # P2: Go left 1 meter
+            (0.0, 0.5)    # P3: Go back to the line of the starting X
+            # Add more waypoints for your full path
+        ]
+        self.current_waypoint_index = 0
         
-        self.get_logger().info("🎉 Mission Complete! 🎉")
+        # --- Control Parameters ---
+        self.distance_threshold = 0.15  # How close to get to a waypoint (meters)
+        self.max_linear_speed = 0.15   # m/s
+        self.max_angular_speed = 0.5  # rad/s
+        
+        # --- Safety Parameters ---
+        self.obstacle_distance_threshold = 0.1 # meters
 
+        # --- Main loop ---
+        self.timer = self.create_timer(0.1, self.run_mission_step) # Run at 10 Hz
 
-    def create_pose_stamped(self, x, y, quaternion):
-        """Helper function to create a PoseStamped message."""
-        pose = PoseStamped()
-        pose.header.frame_id = 'map'
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.pose.position.x = x
-        pose.pose.position.y = y
-        pose.pose.position.z = 0.0
-        pose.pose.orientation.x = quaternion[0]
-        pose.pose.orientation.y = quaternion[1]
-        pose.pose.orientation.z = quaternion[2]
-        pose.pose.orientation.w = quaternion[3]
-        return pose
+    def odom_callback(self, msg: Odometry):
+        """Updates the robot's current position and orientation."""
+        self.current_pose = msg.pose.pose
+        orientation_q = self.current_pose.orientation
+        _, _, self.current_yaw = tf_transformations.euler_from_quaternion(
+            [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w])
+
+    def scan_callback(self, msg: LaserScan):
+        """Checks for obstacles directly in front of the robot."""
+        # This is a simple check. We look at a 60-degree arc in front.
+        # The exact range of indices depends on your Lidar's field of view.
+        # For a 360-degree Lidar, the front is around index 0.
+        num_ranges = len(msg.ranges)
+        front_arc_degrees = 60
+        arc_indices = int((front_arc_degrees / 360.0) * num_ranges)
+        
+        # Check indices at the beginning and end of the array (for 360 Lidar)
+        front_ranges = msg.ranges[:arc_indices//2] + msg.ranges[-arc_indices//2:]
+        
+        # Filter out 'inf' or 0 values
+        valid_ranges = [r for r in front_ranges if r > 0.01]
+        
+        if valid_ranges and min(valid_ranges) < self.obstacle_distance_threshold:
+            self.obstacle_detected = True
+        else:
+            self.obstacle_detected = False
+
+    def run_mission_step(self):
+        """The main logic loop that controls the robot's state."""
+        if self.current_pose is None:
+            self.get_logger().info("Waiting for odometry data...")
+            return
+
+        # --- SAFETY FIRST: Check for obstacles ---
+        if self.obstacle_detected:
+            self.get_logger().warn("Obstacle detected! Stopping.")
+            self.stop_robot()
+            return
+
+        # --- Check if the mission is complete ---
+        if self.current_waypoint_index >= len(self.waypoints):
+            self.get_logger().info("🎉 Mission Complete! 🎉")
+            self.stop_robot()
+            self.timer.cancel() # Stop the timer loop
+            return
+
+        # --- Navigate to the current waypoint ---
+        target_x, target_y = self.waypoints[self.current_waypoint_index]
+        current_x = self.current_pose.position.x
+        current_y = self.current_pose.position.y
+
+        distance_to_target = math.sqrt((target_x - current_x)**2 + (target_y - current_y)**2)
+
+        # --- If close enough, move to the next waypoint ---
+        if distance_to_target < self.distance_threshold:
+            self.get_logger().info(f"Waypoint {self.current_waypoint_index} reached!")
+            self.current_waypoint_index += 1
+            self.stop_robot() # Stop briefly before heading to the next goal
+            return
+
+        # --- If not there yet, calculate movement command ---
+        # This is a simple P-controller (Proportional Controller)
+        angle_to_target = math.atan2(target_y - current_y, target_x - current_x)
+        angle_error = self.normalize_angle(angle_to_target - self.current_yaw)
+
+        # Control logic
+        twist_msg = Twist()
+        # If we are not pointing at the goal, turn first.
+        if abs(angle_error) > 0.1: # 0.1 radians is about 6 degrees
+            twist_msg.angular.z = self.max_angular_speed * (1 if angle_error > 0 else -1)
+        # If we are pointing at the goal, drive forward.
+        else:
+            twist_msg.linear.x = self.max_linear_speed
+        
+        # Publish the command
+        self.cmd_vel_publisher.publish(twist_msg)
+
+    def stop_robot(self):
+        """Publishes a zero-velocity Twist message to stop the robot."""
+        twist_msg = Twist()
+        self.cmd_vel_publisher.publish(twist_msg)
+
+    def normalize_angle(self, angle):
+        """Normalize an angle to be between -pi and pi."""
+        while angle > math.pi:
+            angle -= 2.0 * math.pi
+        while angle < -math.pi:
+            angle += 2.0 * math.pi
+        return angle
+
 
 def main(args=None):
     rclpy.init(args=args)
-
-    # You might need to install this library: pip install transforms3d
-    # Or for ROS2 Humble: sudo apt install ros-humble-tf-transformations
-    # It's often included with a desktop install.
-    
-    mission_planner = MissionPlanner()
-    mission_planner.run_mission()
-
-    # Shutdown
-    mission_planner.destroy_node()
+    mission_controller = MissionPlanner()
+    rclpy.spin(mission_controller)
+    mission_controller.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
