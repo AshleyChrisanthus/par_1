@@ -69,7 +69,7 @@ class GoToPose(Node):
         self.goal_pose.header.stamp = self.get_clock().now().to_msg()
         self.publisher_.publish(self.goal_pose)
         self.get_logger().info('Publishing Navigation Goal: x=%.2f, y=%.2f, yaw=%.2f deg' % 
-                               (p['x'], p['y'], math.degrees(math.atan2(2*(p['ow']p['oz']), 1-2(p['oz']**2)))))
+                               (p['x'], p['y'], math.degrees(math.atan2(2*(p['ow'] * p['oz']), 1-2*(p['oz']**2)))))
 
         self.current_point_index += 1
         if self.current_point_index >= len(self.points):
