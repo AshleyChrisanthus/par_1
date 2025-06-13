@@ -12,13 +12,13 @@ class GoToPose(Node):
 
         # Points to move to in order:
         self.points = [
-            {'x': 0.0, 'y': 0.0, 'z': 0.0,
-             'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0},  # start, yaw=0°
+            # {'x': 0.0, 'y': 0.0, 'z': 0.0,
+            #  'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0},  # start, yaw=0°
             {'x': 1.2, 'y': 0.0, 'z': 0.0,
              'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0},  # forward 1.2m
-            {'x': 1.2, 'y': 0.4, 'z': 0.0,
+            {'x': 1.2, 'y': 0.6, 'z': 0.0,
              'ox': 0.0, 'oy': 0.0, 'oz': 0.7071, 'ow': 0.7071},  # left turn + forward 0.4m (yaw=90°)
-            {'x': 0.0, 'y': 0.4, 'z': 0.0,
+            {'x': 0.0, 'y': 0.6, 'z': 0.0,
              'ox': 0.0, 'oy': 0.0, 'oz': 1.0, 'ow': 0.0}  # left turn + forward 1.2m (yaw=180°)
         ]
         self.current_point_index = 0
