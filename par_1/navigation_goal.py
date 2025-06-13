@@ -5,8 +5,8 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 
 class GoToPose(Node):
-    def _init_(self):
-        super()._init_('navigation_goal')
+    def __init__(self):
+        super().__init__('navigation_goal')
         self.publisher_ = self.create_publisher(PoseStamped, 'goal_pose', 10)
         self.timer = self.create_timer(10.0, self.publish_goal)
         self.goal_pose = PoseStamped()
