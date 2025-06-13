@@ -12,8 +12,8 @@ class GoToPose(Node):
         self.goal_pose = PoseStamped()
 
         self.points = [
-            {'x': 1.0, 'y': -2.0, 'z': 0.0, 'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0},
-            {'x': 3.0, 'y': 1.0,  'z': 0.0, 'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0},
+            {'x': 1.0, 'y': 1.0, 'z': 0.0, 'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0},
+            {'x': 1.5, 'y': 1.0,  'z': 0.0, 'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0},
             {'x': -1.0,'y': 0.5,  'z': 0.0, 'ox': 0.0, 'oy': 0.0, 'oz': 0.0, 'ow': 1.0}
         ]
         self.current_point_index = 0
