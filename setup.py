@@ -38,6 +38,7 @@ setup(
             'orb_tree_detector_node = par_1.orb_tree_detector_node:main',
             'tree_detector_node_gaber = par_1.tree_detector_node_gaber:main',
             'tree_detector_node_depth = par_1.tree_detector_node_depth:main',
+            'explorer_node = par_1.explorer_node:main',
         ],
     },
 )
