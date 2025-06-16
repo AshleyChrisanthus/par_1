@@ -46,6 +46,7 @@ setup(
             # 'mission_planner_node_update = par_1.mission_planner_node_update:main',
             'tennis_ball_marker = par_1.tennis_ball_marker:main',
             'table_tennis_detector = par_1.table_tennis_detector:main', 
+            'nav2_mission_planner_home = par_1.nav2_mission_planner_home:main',
         ],
     },
 )
