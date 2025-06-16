@@ -34,11 +34,11 @@ class SelfContainedNavigator(Node):
         
         # --- Your Requested Avoidance Plan ---
         self.avoidance_plan = [
-            {'action': 'turn', 'value': -45},
+            {'action': 'turn', 'value': -30},   # -45
             {'action': 'drive', 'value': 0.5},
-            {'action': 'turn', 'value': 90},
+            {'action': 'turn', 'value': 30},   # 90
             {'action': 'drive', 'value': 0.8},
-            {'action': 'turn', 'value': -45}
+            {'action': 'turn', 'value': -30}   # -45
         ]
 
         # --- State Machine ---
