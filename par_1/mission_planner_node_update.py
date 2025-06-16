@@ -10,7 +10,7 @@ import math
 
 class SelfContainedNavigator(Node):
     def __init__(self):
-        super().__init__('mission_planner_node_update')
+        super().__init__('mission_planner_node')
 
         # --- Publishers and Subscribers ---
         self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -32,18 +32,17 @@ class SelfContainedNavigator(Node):
             {'action': 'drive', 'value': 2.2}
         ]
         
-        # --- NEW: Your Requested Avoidance Plan ---
-        # ** TUNE THESE VALUES BASED ON YOUR OBSTACLE SIZE **
+        # --- Your Requested Avoidance Plan ---
         self.avoidance_plan = [
-            {'action': 'turn', 'value': -45}, # 1. Turn right 45 deg
+            {'action': 'turn', 'value': -30}, # 1. Turn right 45 deg
             {'action': 'drive', 'value': 0.5}, # 2. Drive diagonally forward
-            {'action': 'turn', 'value': 90},  # 3. Turn left 90 deg (now parallel to original path)
-            {'action': 'drive', 'value': 0.8}, # 4. Drive forward past the obstacle
-            {'action': 'turn', 'value': -45}  # 5. Turn right 45 deg to be aligned with original path again
+            {'action': 'turn', 'value': 90},  # 3. Turn left 90 deg (now parallel)
+            {'action': 'drive', 'value': 0.8}, # 4. Drive forward past obstacle
+            {'action': 'turn', 'value': -30}  # 5. Turn right 45 deg to realign
         ]
 
         # --- State Machine ---
-        self.current_state = 'NAVIGATING' # 'NAVIGATING' or 'AVOIDING'
+        self.current_state = 'NAVIGATING'
         self.active_plan = self.mission_plan
         self.current_action_index = 0
         self.is_executing_action = False
@@ -55,10 +54,10 @@ class SelfContainedNavigator(Node):
         self.current_pose = None
         self.current_yaw = 0.0
 
-        # --- Control & Safety Parameters ---
-        self.linear_speed = 0.2
+        # --- THE FIX: Corrected Control & Safety Parameters ---
+        self.linear_speed = 0.15  # SLOWED DOWN for less momentum
         self.angular_speed = 0.4
-        self.obstacle_distance = 0.35
+        self.obstacle_distance = 0.5 # INCREASED for more braking room
         self.tolerance = 0.05
 
         # --- Main loop ---
@@ -82,28 +81,24 @@ class SelfContainedNavigator(Node):
 
     def run_mission_step(self):
         if self.current_pose is None:
-            self.get_logger().info("Waiting for odometry...")
             return
 
-        # --- THE FIX: Immediate state transition is the highest priority ---
-        # If navigating and an obstacle is seen while driving, switch state and DO NOTHING ELSE THIS TICK.
+        # --- Immediate state transition is the highest priority ---
         if self.current_state == 'NAVIGATING' and self.obstacle_detected and \
            self.is_executing_action and self.active_plan[self.current_action_index]['action'] == 'drive':
             
-            self.get_logger().warn("Obstacle detected! Starting avoidance maneuver immediately.")
-            self.stop_robot() # Stop first
+            self.get_logger().warn(f"Obstacle detected at {min([r for r in self.scan_callback.last_scan.ranges if r > 0.01]):.2f}m! Starting avoidance.")
+            self.stop_robot()
             
-            # Calculate remaining distance
             distance_traveled = math.sqrt((self.current_pose.position.x - self.start_pose.position.x)**2 + 
                                           (self.current_pose.position.y - self.start_pose.position.y)**2)
             self.remaining_drive_distance = max(0, self.active_plan[self.current_action_index]['value'] - distance_traveled)
             
-            # Switch to avoidance state
             self.current_state = 'AVOIDING'
             self.active_plan = self.avoidance_plan
             self.current_action_index = 0
             self.is_executing_action = False
-            return # Exit the function immediately to prevent any further action this tick
+            return
 
         # --- Normal Execution Logic ---
         if self.current_action_index >= len(self.active_plan):
@@ -116,16 +111,13 @@ class SelfContainedNavigator(Node):
         self._execute_action()
 
     def handle_plan_completion(self):
-        """Called when the current plan (mission or avoidance) is finished."""
         if self.current_state == 'AVOIDING':
-            self.get_logger().info("Avoidance maneuver complete. Resuming original path.")
+            self.get_logger().info("Avoidance complete. Resuming original path.")
             self.current_state = 'NAVIGATING'
             self.active_plan = self.mission_plan
-            # The mission index is already at the correct 'drive' action,
-            # we just need to update its value with the remaining distance.
             self.active_plan[self.current_action_index]['value'] = self.remaining_drive_distance
             self.is_executing_action = False
-        else: # NAVIGATING state
+        else:
             self.get_logger().info("🎉 Mission Complete! 🎉")
             self.stop_robot()
             self.timer.cancel()
@@ -141,7 +133,6 @@ class SelfContainedNavigator(Node):
                 twist_msg.linear.x = self.linear_speed
             else:
                 self.action_completed()
-        
         elif action['action'] == 'turn':
             start_yaw = self._quaternion_to_yaw(self.start_pose.orientation)
             angle_turned = abs(self.normalize_angle(self.current_yaw - start_yaw))
@@ -152,7 +143,6 @@ class SelfContainedNavigator(Node):
                 twist_msg.angular.z = self.angular_speed * turn_direction
             else:
                 self.action_completed()
-
         self.cmd_vel_publisher.publish(twist_msg)
 
     def start_new_action(self):
@@ -175,6 +165,15 @@ class SelfContainedNavigator(Node):
         while angle > math.pi: angle -= 2.0 * math.pi
         while angle < -math.pi: angle += 2.0 * math.pi
         return angle
+
+# Add a simple helper to the scan callback to store the last scan for logging
+def scan_callback_wrapper(self, msg):
+    self.scan_callback.last_scan = msg
+    self.scan_callback(msg)
+
+SelfContainedNavigator.scan_callback.last_scan = None
+SelfContainedNavigator.scan_callback = scan_callback_wrapper.__get__(SelfContainedNavigator, SelfContainedNavigator)
+
 
 def main(args=None):
     rclpy.init(args=args)
