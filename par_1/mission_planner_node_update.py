@@ -32,18 +32,14 @@ class SelfContainedNavigator(Node):
             {'action': 'drive', 'value': 2.2}
         ]
         
-        # --- The side-step maneuver ---
-        # ** TUNE THESE VALUES **
-        sideways_dist = 0.3  # How far to move sideways
-        forward_dist = 0.3  # How far to drive forward to pass the obstacle
+        # --- NEW: Your Requested Avoidance Plan ---
+        # ** TUNE THESE VALUES BASED ON YOUR OBSTACLE SIZE **
         self.avoidance_plan = [
-            {'action': 'turn', 'value': -90}, # Turn right
-            {'action': 'drive', 'value': sideways_dist},
-            {'action': 'turn', 'value': 90},  # Turn left (to face original direction)
-            {'action': 'drive', 'value': forward_dist},
-            {'action': 'turn', 'value': 90},  # Turn left
-            {'action': 'drive', 'value': sideways_dist},
-            {'action': 'turn', 'value': -90}  # Turn right to realign
+            {'action': 'turn', 'value': -45}, # 1. Turn right 45 deg
+            {'action': 'drive', 'value': 0.5}, # 2. Drive diagonally forward
+            {'action': 'turn', 'value': 90},  # 3. Turn left 90 deg (now parallel to original path)
+            {'action': 'drive', 'value': 0.8}, # 4. Drive forward past the obstacle
+            {'action': 'turn', 'value': -45}  # 5. Turn right 45 deg to be aligned with original path again
         ]
 
         # --- State Machine ---
@@ -89,61 +85,52 @@ class SelfContainedNavigator(Node):
             self.get_logger().info("Waiting for odometry...")
             return
 
-        # --- State Transition Logic ---
-        # If we are navigating and an obstacle appears, switch to AVOIDING state
-        if self.current_state == 'NAVIGATING' and self.obstacle_detected:
-            # Only trigger if the current action is driving forward
-            if self.is_executing_action and self.active_plan[self.current_action_index]['action'] == 'drive':
-                self.get_logger().warn("Obstacle detected! Switching to AVOIDING state.")
-                self.switch_to_avoidance_state()
-                return # Skip the rest of the loop to start avoidance on the next tick
-        
-        # --- Action Execution Logic ---
-        # Check if the current plan is complete
+        # --- THE FIX: Immediate state transition is the highest priority ---
+        # If navigating and an obstacle is seen while driving, switch state and DO NOTHING ELSE THIS TICK.
+        if self.current_state == 'NAVIGATING' and self.obstacle_detected and \
+           self.is_executing_action and self.active_plan[self.current_action_index]['action'] == 'drive':
+            
+            self.get_logger().warn("Obstacle detected! Starting avoidance maneuver immediately.")
+            self.stop_robot() # Stop first
+            
+            # Calculate remaining distance
+            distance_traveled = math.sqrt((self.current_pose.position.x - self.start_pose.position.x)**2 + 
+                                          (self.current_pose.position.y - self.start_pose.position.y)**2)
+            self.remaining_drive_distance = max(0, self.active_plan[self.current_action_index]['value'] - distance_traveled)
+            
+            # Switch to avoidance state
+            self.current_state = 'AVOIDING'
+            self.active_plan = self.avoidance_plan
+            self.current_action_index = 0
+            self.is_executing_action = False
+            return # Exit the function immediately to prevent any further action this tick
+
+        # --- Normal Execution Logic ---
         if self.current_action_index >= len(self.active_plan):
-            if self.current_state == 'AVOIDING':
-                self.get_logger().info("Avoidance maneuver complete. Switching back to NAVIGATING.")
-                self.switch_to_navigation_state()
-            else: # NAVIGATING state
-                self.get_logger().info("🎉 Mission Complete! 🎉")
-                self.stop_robot()
-                self.timer.cancel()
+            self.handle_plan_completion()
             return
         
-        # Start a new action if not currently executing one
         if not self.is_executing_action:
             self.start_new_action()
-            return
-
-        # Continue executing the current action
+        
         self._execute_action()
 
-    def switch_to_avoidance_state(self):
-        """Prepares the robot to start the avoidance maneuver."""
-        self.current_state = 'AVOIDING'
-        
-        # Calculate how much farther the robot needed to drive
-        distance_traveled = math.sqrt((self.current_pose.position.x - self.start_pose.position.x)**2 + 
-                                      (self.current_pose.position.y - self.start_pose.position.y)**2)
-        total_distance = self.active_plan[self.current_action_index]['value']
-        self.remaining_drive_distance = max(0, total_distance - distance_traveled)
-        
-        # Set up for the avoidance plan
-        self.active_plan = self.avoidance_plan
-        self.current_action_index = 0
-        self.is_executing_action = False
-        self.stop_robot()
-    
-    def switch_to_navigation_state(self):
-        """Resumes the original mission after avoidance."""
-        self.current_state = 'NAVIGATING'
-        self.active_plan = self.mission_plan
-        # We don't increment the mission index, we just update the distance value
-        self.active_plan[self.current_action_index]['value'] = self.remaining_drive_distance
-        self.is_executing_action = False
+    def handle_plan_completion(self):
+        """Called when the current plan (mission or avoidance) is finished."""
+        if self.current_state == 'AVOIDING':
+            self.get_logger().info("Avoidance maneuver complete. Resuming original path.")
+            self.current_state = 'NAVIGATING'
+            self.active_plan = self.mission_plan
+            # The mission index is already at the correct 'drive' action,
+            # we just need to update its value with the remaining distance.
+            self.active_plan[self.current_action_index]['value'] = self.remaining_drive_distance
+            self.is_executing_action = False
+        else: # NAVIGATING state
+            self.get_logger().info("🎉 Mission Complete! 🎉")
+            self.stop_robot()
+            self.timer.cancel()
 
     def _execute_action(self):
-        """Drives or turns the robot based on the current action."""
         action = self.active_plan[self.current_action_index]
         twist_msg = Twist()
 
@@ -172,10 +159,10 @@ class SelfContainedNavigator(Node):
         self.is_executing_action = True
         self.start_pose = self.current_pose
         action = self.active_plan[self.current_action_index]
-        self.get_logger().info(f"[{self.current_state}] Starting action: {action['action']} {action['value']}")
+        self.get_logger().info(f"[{self.current_state}] Starting: {action['action']} for {action['value']}")
 
     def action_completed(self):
-        self.get_logger().info(f"[{self.current_state}] Action completed.")
+        self.get_logger().info(f"[{self.current_state}] Action complete.")
         self.stop_robot()
         self.is_executing_action = False
         self.current_action_index += 1
