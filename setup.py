@@ -42,6 +42,7 @@ setup(
             'navigation_goal = par_1.navigation_goal:main',
             'explorer_node = par_1.explorer_node:main',
             'mission_planner_node = par_1.mission_planner_node:main',
+            'nav2_mission_planner = par_1.nav2_mission_planner:main',
         ],
     },
 )
