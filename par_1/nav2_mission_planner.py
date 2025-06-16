@@ -17,8 +17,8 @@ class Nav2MissionPlanner(Node):
 
         # --- Waypoints: (x, y, yaw_degrees) ---
         self.waypoints: List[Tuple[float, float, float]] = [
-            (2.2, 0.0,   0),
-            (2.2, 0.6,  90),
+            (1.2, 0.0,   0),
+            (1.2, 0.6,  90),
             (0.0, 0.6, 180),
         ]
 
