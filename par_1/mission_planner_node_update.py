@@ -10,7 +10,7 @@ import math
 
 class SelfContainedNavigator(Node):
     def __init__(self):
-        super().__init__('mission_planner_node')
+        super().__init__('mission_planner_node_update')
 
         # --- Publishers and Subscribers ---
         self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -34,11 +34,11 @@ class SelfContainedNavigator(Node):
         
         # --- Your Requested Avoidance Plan ---
         self.avoidance_plan = [
-            {'action': 'turn', 'value': -30}, # 1. Turn right 45 deg
-            {'action': 'drive', 'value': 0.5}, # 2. Drive diagonally forward
-            {'action': 'turn', 'value': 90},  # 3. Turn left 90 deg (now parallel)
-            {'action': 'drive', 'value': 0.8}, # 4. Drive forward past obstacle
-            {'action': 'turn', 'value': -30}  # 5. Turn right 45 deg to realign
+            {'action': 'turn', 'value': -45},
+            {'action': 'drive', 'value': 0.5},
+            {'action': 'turn', 'value': 90},
+            {'action': 'drive', 'value': 0.8},
+            {'action': 'turn', 'value': -45}
         ]
 
         # --- State Machine ---
@@ -53,14 +53,15 @@ class SelfContainedNavigator(Node):
         self.start_pose = None
         self.current_pose = None
         self.current_yaw = 0.0
+        self.last_yaw = 0.0 # NEW: To track angle change per tick
+        self.total_angle_turned = 0.0 # NEW: To track total turn
 
-        # --- THE FIX: Corrected Control & Safety Parameters ---
-        self.linear_speed = 0.15  # SLOWED DOWN for less momentum
+        # --- Control & Safety Parameters ---
+        self.linear_speed = 0.15
         self.angular_speed = 0.4
-        self.obstacle_distance = 0.5 # INCREASED for more braking room
+        self.obstacle_distance = 0.5
         self.tolerance = 0.05
 
-        # --- Main loop ---
         self.timer = self.create_timer(0.1, self.run_mission_step)
 
     def _quaternion_to_yaw(self, q: Quaternion) -> float:
@@ -70,6 +71,7 @@ class SelfContainedNavigator(Node):
 
     def odom_callback(self, msg: Odometry):
         self.current_pose = msg.pose.pose
+        self.last_yaw = self.current_yaw # Store the previous yaw
         self.current_yaw = self._quaternion_to_yaw(self.current_pose.orientation)
 
     def scan_callback(self, msg: LaserScan):
@@ -83,11 +85,10 @@ class SelfContainedNavigator(Node):
         if self.current_pose is None:
             return
 
-        # --- Immediate state transition is the highest priority ---
         if self.current_state == 'NAVIGATING' and self.obstacle_detected and \
            self.is_executing_action and self.active_plan[self.current_action_index]['action'] == 'drive':
             
-            self.get_logger().warn(f"Obstacle detected at {min([r for r in self.scan_callback.last_scan.ranges if r > 0.01]):.2f}m! Starting avoidance.")
+            self.get_logger().warn("Obstacle detected! Starting avoidance maneuver immediately.")
             self.stop_robot()
             
             distance_traveled = math.sqrt((self.current_pose.position.x - self.start_pose.position.x)**2 + 
@@ -100,7 +101,6 @@ class SelfContainedNavigator(Node):
             self.is_executing_action = False
             return
 
-        # --- Normal Execution Logic ---
         if self.current_action_index >= len(self.active_plan):
             self.handle_plan_completion()
             return
@@ -133,16 +133,20 @@ class SelfContainedNavigator(Node):
                 twist_msg.linear.x = self.linear_speed
             else:
                 self.action_completed()
+        
         elif action['action'] == 'turn':
-            start_yaw = self._quaternion_to_yaw(self.start_pose.orientation)
-            angle_turned = abs(self.normalize_angle(self.current_yaw - start_yaw))
-            target_angle_rad = math.radians(action['value'])
-            
-            if angle_turned < target_angle_rad - self.tolerance:
+            # --- THE NEW, ROBUST TURNING LOGIC ---
+            delta_angle = self.normalize_angle(self.current_yaw - self.last_yaw)
+            self.total_angle_turned += delta_angle
+
+            target_angle_rad = math.radians(abs(action['value']))
+
+            if abs(self.total_angle_turned) < target_angle_rad - self.tolerance:
                 turn_direction = 1.0 if action['value'] > 0 else -1.0
                 twist_msg.angular.z = self.angular_speed * turn_direction
             else:
                 self.action_completed()
+        
         self.cmd_vel_publisher.publish(twist_msg)
 
     def start_new_action(self):
@@ -150,12 +154,18 @@ class SelfContainedNavigator(Node):
         self.start_pose = self.current_pose
         action = self.active_plan[self.current_action_index]
         self.get_logger().info(f"[{self.current_state}] Starting: {action['action']} for {action['value']}")
+        
+        # --- RESET ACCUMULATORS FOR THE NEW ACTION ---
+        if action['action'] == 'turn':
+            self.total_angle_turned = 0.0
+            self.last_yaw = self.current_yaw
 
     def action_completed(self):
         self.get_logger().info(f"[{self.current_state}] Action complete.")
         self.stop_robot()
         self.is_executing_action = False
         self.current_action_index += 1
+        # Give a moment for the robot to settle before the next action
         self.timer.reset()
 
     def stop_robot(self):
@@ -165,15 +175,6 @@ class SelfContainedNavigator(Node):
         while angle > math.pi: angle -= 2.0 * math.pi
         while angle < -math.pi: angle += 2.0 * math.pi
         return angle
-
-# Add a simple helper to the scan callback to store the last scan for logging
-def scan_callback_wrapper(self, msg):
-    self.scan_callback.last_scan = msg
-    self.scan_callback(msg)
-
-SelfContainedNavigator.scan_callback.last_scan = None
-SelfContainedNavigator.scan_callback = scan_callback_wrapper.__get__(SelfContainedNavigator, SelfContainedNavigator)
-
 
 def main(args=None):
     rclpy.init(args=args)
