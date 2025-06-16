@@ -13,7 +13,8 @@ class GoToPose(Node):
         self.publisher_ = self.create_publisher(PoseStamped, 'goal_pose', 10)
         self.subscription = self.create_subscription(
             Odometry,
-            '/rosbot_base_controller/odom',
+            # '/rosbot_base_controller/odom', # rosbot 2
+            '/odometry/filtered',
             self.odom_callback,
             10
         )
