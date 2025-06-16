@@ -8,6 +8,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped, Quaternion
 from nav2_msgs.action import NavigateToPose
+from action_msgs.msg import GoalStatus
 
 
 class Nav2MissionPlanner(Node):
@@ -84,13 +85,20 @@ class Nav2MissionPlanner(Node):
             f'Distance to goal: {fb.distance_remaining:.2f} m')
 
     def _result_cb(self, future):
-        result = future.result().result
-        if result.error_code == 0:
+        # result = future.result().result
+        # if result.error_code == 0:
+        #     self.get_logger().info('✅ Goal reached successfully')
+        # else:
+        #     self.get_logger().warn(f'⚠️ Goal failed with error code {result.error_code}')
+        # self.current_idx += 1
+        # self.is_sending = False
+        status = future.result().status          # <‑‑ USE STATUS
+        if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('✅ Goal reached successfully')
         else:
-            self.get_logger().warn(f'⚠️ Goal failed with error code {result.error_code}')
+            self.get_logger().warn(f'⚠️ Goal ended with status {status}')
         self.current_idx += 1
-        self.is_sending = False
+        self.is_sending = False        
 
 
 def main(args=None):
