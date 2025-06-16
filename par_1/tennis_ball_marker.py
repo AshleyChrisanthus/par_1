@@ -11,7 +11,7 @@ import cv2
 from cv_bridge import CvBridge
 import numpy as np
 
-class TennisBallDetector(Node):
+class TennisBallMarker(Node):
     def __init__(self):
         super().__init__('tennis_ball_marker')
 
@@ -150,7 +150,7 @@ class TennisBallDetector(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TennisBallDetector()
+    node = TennisBallMarker()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
