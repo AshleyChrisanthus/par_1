@@ -11,8 +11,10 @@ import cv2
 from cv_bridge import CvBridge
 import numpy as np
 
+#+ Change class name to reflect the new target
 class PingPongBallDetector(Node):
     def __init__(self):
+        #+ Update node name
         super().__init__('table_tennis_detector')
 
         self.bridge = CvBridge()
@@ -23,6 +25,7 @@ class PingPongBallDetector(Node):
         self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
 
         # Publishers
+        #+ Update marker topic name for clarity
         self.marker_pub = self.create_publisher(Marker, '/ping_pong_ball_marker', 10)
         self.home_trigger_pub = self.create_publisher(Empty, '/trigger_home', 10)
 
@@ -31,19 +34,26 @@ class PingPongBallDetector(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Detection tracking
-        self.detected_points = []  # Store detected ball positions in the map frame
+        #+ Update comment
+        self.detected_points = []  # Store detected ping pong ball positions
         self.detection_count = 0
         self.frame_count = 0
 
-        self.get_logger().info('White Ping Pong Ball Detector initialized!')
-        self.get_logger().info('Strategy: Mask out GREEN floor, then find WHITE circles.')
+        #- REMOVE ALL OLD COLOR-BASED DETECTION VARIABLES
+        #- self.green_lower = np.array([25, 100, 100])
+        #- self.green_upper = np.array([40, 255, 255])
+        #- self.other_color_ranges = [ ... ]
+
+        #+ Update logging messages
+        self.get_logger().info('Ping Pong Ball Detector initialized!')
+        self.get_logger().info('Strategy: Masking green floor, then finding circles.')
 
     def scan_callback(self, msg):
         """Store LiDAR scan data."""
         self.scan = msg
 
     def image_callback(self, msg):
-        """Main image processing callback."""
+        """Main image processing callback with the new detection logic."""
         if self.scan is None:
             self.get_logger().warn('Waiting for LiDAR scan data...')
             return
@@ -52,54 +62,65 @@ class PingPongBallDetector(Node):
             self.frame_count += 1
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
-            # Detect balls using the hybrid color-mask + shape-detection method
-            detected_balls = self.detect_balls(cv_image)
+            #+ Detect balls using the new hybrid color-mask and shape-detection method
+            detected_balls = self.detect_ping_pong_balls(cv_image)
             
+            #+ If balls are found, process each one
             if detected_balls:
                 for ball_data in detected_balls:
                     self.process_ping_pong_ball(cv_image, ball_data)
             else:
-                if self.frame_count % 120 == 0:  # Log status every ~4 seconds
+                # Log scanning status occasionally
+                if self.frame_count % 120 == 0:  # Every ~4 seconds
                     self.get_logger().info('Scanning for white ping pong balls...')
                     
         except Exception as e:
             self.get_logger().error(f'Error in ball detection: {str(e)}')
 
-    def detect_balls(self, cv_image):
+    #+ --- NEW, MORE ROBUST DETECTION FUNCTION ---
+    def detect_ping_pong_balls(self, cv_image):
         """
-        Detects white circular balls by first masking out the green floor to create contrast.
+        Detects white circular balls by first masking the green floor to create contrast.
+        This is a robust method for a textured floor and potentially white background.
         """
-        # 1. Create a mask for the green floor
+        # 1. Convert to HSV color space for accurate color masking.
         hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
         
-        # --- IMPORTANT ---
-        # These HSV values for green must be tuned for your specific lighting and floor color!
-        green_lower = np.array([35, 50, 50])
-        green_upper = np.array([85, 255, 255])
+        # 2. Define the color range for the green floor based on your image.
+        #    These values are a good starting point but may need tuning.
+        green_lower = np.array([30, 40, 40])
+        green_upper = np.array([90, 255, 255])
+        
+        # 3. Create a mask to identify the floor.
         floor_mask = cv2.inRange(hsv, green_lower, green_upper)
+        
+        # 4. Clean the mask to remove noise from the astroturf texture.
+        #    This is a critical step to prevent false positives.
+        kernel = np.ones((5, 5), np.uint8)
+        floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_CLOSE, kernel)
+        floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_OPEN, kernel)
 
-        # 2. Invert the mask to get everything that is NOT the floor (balls, walls, etc.)
+        # 5. Invert the mask to focus on everything that is NOT the floor.
         non_floor_mask = ~floor_mask
 
-        # 3. Apply the inverted mask to a grayscale version of the image.
-        # This makes the floor black, ensuring the ball has contrast all around it.
+        # 6. Prepare the image for circle detection.
         gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+        # Apply the mask: This makes the floor black, creating high contrast for the ball.
         gray_masked = cv2.bitwise_and(gray, gray, mask=non_floor_mask)
-
-        # 4. Blur the masked image to reduce noise for the circle detector
+        # Blur the image to reduce noise and improve HoughCircles performance.
         gray_blurred = cv2.GaussianBlur(gray_masked, (9, 9), 2, 2)
 
-        # 5. Run Hough Circle Transform on the pre-processed, masked image
-        # These parameters require tuning for your specific camera setup and distance.
+        # 7. Use Hough Circle Transform to find circles in the processed image.
+        #    These parameters are tuned to be more selective to reduce false positives.
         circles = cv2.HoughCircles(
             gray_blurred, 
             cv2.HOUGH_GRADIENT, 
             dp=1.2, 
-            minDist=40,       # Min distance between centers of detected circles.
-            param1=100,       # Higher threshold for the internal Canny edge detector.
-            param2=20,        # Accumulator threshold. Lower -> more (and possibly false) circles.
-            minRadius=5,      # Minimum radius of the ball in pixels (when it's far away).
-            maxRadius=40      # Maximum radius of the ball in pixels (when it's close).
+            minDist=50,       # Minimum distance between centers of detected balls.
+            param1=100,       # Canny edge detection upper threshold.
+            param2=30,        # Accumulator threshold (confidence). Higher = fewer, more certain circles.
+            minRadius=8,      # Min radius in pixels (ball is far).
+            maxRadius=50      # Max radius in pixels (ball is near).
         )
         
         if circles is None:
@@ -113,8 +134,13 @@ class PingPongBallDetector(Node):
 
         return ball_data_list
 
+    #- Remove old, unused detection functions
+    #- def detect_green_tennis_ball(self, cv_image): ...
+    #- def detect_other_colored_balls(self, cv_image): ...
+
+    #+ Rename the processing function to be specific
     def process_ping_pong_ball(self, cv_image, ball_data):
-        """Processes a single detected ball."""
+        """Process a single detected ping pong ball."""
         center_x = ball_data['center_x']
         center_y = ball_data['center_y']
         
@@ -124,6 +150,7 @@ class PingPongBallDetector(Node):
             lidar_x, lidar_y, map_x, map_y = world_coords
             
             self.detection_count += 1
+            #+ Update log messages
             self.get_logger().info('PING PONG BALL DETECTED!')
             self.get_logger().info(f'  Detection #{self.detection_count}:')
             self.get_logger().info(f'  Pixel coordinates: ({int(center_x)}, {int(center_y)})')
@@ -150,7 +177,7 @@ class PingPongBallDetector(Node):
                 self.get_logger().warn(f'LiDAR index {index} out of range')
                 return None
             distance = self.scan.ranges[index]
-            if not (self.scan.range_min <= distance <= self.scan.range_max):
+            if not np.isfinite(distance) or not (self.scan.range_min <= distance <= self.scan.range_max):
                 self.get_logger().warn(f'Invalid LiDAR distance: {distance:.2f}')
                 return None
             lidar_x = distance * np.cos(angle)
@@ -162,7 +189,10 @@ class PingPongBallDetector(Node):
             point_lidar.point.y = lidar_y
             point_lidar.point.z = 0.0
             map_coords = self.transform_to_map(point_lidar)
-            return (lidar_x, lidar_y, map_coords[0], map_coords[1]) if map_coords else (lidar_x, lidar_y, None, None)
+            if map_coords:
+                return (lidar_x, lidar_y, map_coords[0], map_coords[1])
+            else:
+                return (lidar_x, lidar_y, None, None)
         except Exception as e:
             self.get_logger().error(f'Error getting world coordinates: {str(e)}')
             return None
@@ -171,15 +201,19 @@ class PingPongBallDetector(Node):
         """Transform point from LiDAR frame to map frame."""
         try:
             timeout = rclpy.duration.Duration(seconds=0.1)
-            transform = self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout)
-            point_map = tf2_geometry_msgs.do_transform_point(point_lidar, transform)
-            return (point_map.point.x, point_map.point.y)
+            if self.tf_buffer.can_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout):
+                transform = self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time())
+                point_map = tf2_geometry_msgs.do_transform_point(point_lidar, transform)
+                return (point_map.point.x, point_map.point.y)
+            else:
+                self.get_logger().warn(f'TF transform not ready to map frame')
+                return None
         except tf2_ros.TransformException as e:
-            self.get_logger().warn(f'TF transform not ready to transform to map frame: {e}')
+            self.get_logger().error(f'TF exception in transform_to_map: {e}')
             return None
 
     def is_new_ball(self, new_point, threshold=0.3):
-        """Check if this is a new ball or previously detected. Threshold is in meters."""
+        """Check if this is a new ball or previously detected."""
         for point in self.detected_points:
             if np.hypot(new_point.point.x - point.point.x, new_point.point.y - point.point.y) < threshold:
                 return False
@@ -189,19 +223,24 @@ class PingPongBallDetector(Node):
         """Transform to map frame and publish marker if new ball."""
         try:
             timeout = rclpy.duration.Duration(seconds=0.1)
-            transform = self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout)
-            point_map = tf2_geometry_msgs.do_transform_point(point_lidar, transform)
+            if self.tf_buffer.can_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout):
+                transform = self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time())
+                point_map = tf2_geometry_msgs.do_transform_point(point_lidar, transform)
 
-            if self.is_new_ball(point_map):
-                self.publish_marker(point_map)
-                self.detected_points.append(point_map)
-                self.get_logger().info(f'New ping pong ball confirmed at map ({point_map.point.x:.2f}, {point_map.point.y:.2f})')
-                self.get_logger().info(f'Published marker #{len(self.detected_points)} in RViz')
-                
-                self.home_trigger_pub.publish(Empty())
-                self.get_logger().info('Triggered home return sequence')
+                if self.is_new_ball(point_map):
+                    self.publish_marker(point_map)
+                    self.detected_points.append(point_map)
+                    #+ Update log message
+                    self.get_logger().info(f'New ping pong ball confirmed at map ({point_map.point.x:.2f}, {point_map.point.y:.2f})')
+                    self.get_logger().info(f'Published marker #{len(self.detected_points)} in RViz')
+                    
+                    self.home_trigger_pub.publish(Empty())
+                    self.get_logger().info('Triggered home return sequence')
+                else:
+                    #+ Update log message
+                    self.get_logger().info('Previously detected ping pong ball - ignoring duplicate')
             else:
-                self.get_logger().info('Previously detected ball - ignoring duplicate')
+                self.get_logger().warn('TF transform not ready for publishing')
         except tf2_ros.TransformException as e:
             self.get_logger().error(f'TF exception during publish: {e}')
 
@@ -210,6 +249,7 @@ class PingPongBallDetector(Node):
         marker = Marker()
         marker.header.frame_id = 'map'
         marker.header.stamp = self.get_clock().now().to_msg()
+        #+ Update namespace
         marker.ns = 'ping_pong_balls'
         marker.id = len(self.detected_points)
         marker.type = Marker.SPHERE
@@ -217,13 +257,11 @@ class PingPongBallDetector(Node):
         marker.pose.position = point_map.point
         marker.pose.orientation.w = 1.0
 
-        # Set scale to the real-world size of a ping pong ball (40mm diameter)
+        #+ Set scale to ping pong ball size (40mm diameter) and a visible color (orange)
         marker.scale.x = marker.scale.y = marker.scale.z = 0.04
-        
-        # Set color to a distinct bright blue for high visibility in RViz
-        marker.color.r = 0.0
-        marker.color.g = 0.7
-        marker.color.b = 1.0
+        marker.color.r = 1.0
+        marker.color.g = 0.5
+        marker.color.b = 0.0
         marker.color.a = 1.0
 
         self.marker_pub.publish(marker)
@@ -232,6 +270,7 @@ def main(args=None):
     rclpy.init(args=args)
     detector = None
     try:
+        #+ Use the new class name
         detector = PingPongBallDetector()
         rclpy.spin(detector)
     except KeyboardInterrupt:
