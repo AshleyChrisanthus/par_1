@@ -144,25 +144,25 @@ class TennisBallDetector(Node):
     #     }
 
     def detect_green_tennis_balls(cv_image):
-    hsv  = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, self.green_lower, self.green_upper)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    balls = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < 100:           # same filter you use now
-            continue
-        x,y,w,h = cv2.boundingRect(c)
-        balls.append({
-            'contour': c,
-            'center_x': x + w/2,
-            'center_y': y + h/2,
-            'area': area,
-            'bbox': (x,y,w,h)
-        })
-    return balls          # list (possibly empty)
+        hsv  = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, self.green_lower, self.green_upper)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
+    
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        balls = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 100:           # same filter you use now
+                continue
+            x,y,w,h = cv2.boundingRect(c)
+            balls.append({
+                'contour': c,
+                'center_x': x + w/2,
+                'center_y': y + h/2,
+                'area': area,
+                'bbox': (x,y,w,h)
+            })
+        return balls          # list (possibly empty)
 
     
     def detect_other_colored_balls(self, cv_image):
