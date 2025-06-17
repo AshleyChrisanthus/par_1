@@ -77,8 +77,13 @@ class TennisBallDetector(Node):
             # Convert ROS Image to OpenCV
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
-            # Check for green tennis balls (macadamia nuts)
-            green_ball = self.detect_green_tennis_ball(cv_image)
+            # # Check for green tennis balls (macadamia nuts)
+            # green_ball = self.detect_green_tennis_ball(cv_image)
+
+            # logic to process multiple balls at the same time-------------------------------------------------------------------------------------------
+            green_balls = self.detect_green_tennis_balls(cv_image)
+            for ball in green_balls:
+                self.process_macadamia_nut(cv_image, ball)
             
             if green_ball:
                 # Process the green ball (macadamia nut)
@@ -97,47 +102,69 @@ class TennisBallDetector(Node):
         except Exception as e:
             self.get_logger().error(f'Error in tennis ball detection: {str(e)}')
 
-    def detect_green_tennis_ball(self, cv_image):
-        """Detect green tennis balls (macadamia nuts)."""
-        # Convert to HSV color space
-        hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+    # def detect_green_tennis_ball(self, cv_image):
+    #     """Detect green tennis balls (macadamia nuts)."""
+    #     # Convert to HSV color space
+    #     hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
         
-        # Create mask for green tennis balls
-        mask = cv2.inRange(hsv, self.green_lower, self.green_upper)
+    #     # Create mask for green tennis balls
+    #     mask = cv2.inRange(hsv, self.green_lower, self.green_upper)
         
-        # Morphology to reduce noise
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    #     # Morphology to reduce noise
+    #     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
 
-        # Find contours
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    #     # Find contours
+    #     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        if not contours:
-            return None
+    #     if not contours:
+    #         return None
 
-        # Find largest contour (assumed to be the tennis ball)
-        largest_contour = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest_contour)
+    #     # Find largest contour (assumed to be the tennis ball)
+    #     largest_contour = max(contours, key=cv2.contourArea)
+    #     area = cv2.contourArea(largest_contour)
         
-        # if area < 200:  # Filter small blobs
-        #     return None
+    #     # if area < 200:  # Filter small blobs
+    #     #     return None
 
-        # NEW---------------------------------------------------------------------------------------------------------------------------------------------------
-        if area < 100:  # Filter very small blobs (adjust if needed)
-            return None
+    #     # NEW---------------------------------------------------------------------------------------------------------------------------------------------------
+    #     if area < 100:  # Filter very small blobs (adjust if needed)
+    #         return None
 
-        # Get bounding box
-        x, y, w, h = cv2.boundingRect(largest_contour)
-        center_x = x + w / 2
-        center_y = y + h / 2
+    #     # Get bounding box
+    #     x, y, w, h = cv2.boundingRect(largest_contour)
+    #     center_x = x + w / 2
+    #     center_y = y + h / 2
         
-        return {
-            'contour': largest_contour,
-            'center_x': center_x,
-            'center_y': center_y,
+    #     return {
+    #         'contour': largest_contour,
+    #         'center_x': center_x,
+    #         'center_y': center_y,
+    #         'area': area,
+    #         'bbox': (x, y, w, h)
+    #     }
+
+    def detect_green_tennis_balls(cv_image):
+    hsv  = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, self.green_lower, self.green_upper)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    balls = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 100:           # same filter you use now
+            continue
+        x,y,w,h = cv2.boundingRect(c)
+        balls.append({
+            'contour': c,
+            'center_x': x + w/2,
+            'center_y': y + h/2,
             'area': area,
-            'bbox': (x, y, w, h)
-        }
+            'bbox': (x,y,w,h)
+        })
+    return balls          # list (possibly empty)
 
+    
     def detect_other_colored_balls(self, cv_image):
         """Detect other colored balls to reject them."""
         hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
