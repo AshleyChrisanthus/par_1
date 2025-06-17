@@ -36,13 +36,13 @@ class TennisBallDetector(Node):
         self.frame_count = 0
 
         # Color ranges for detection
-        # # Green tennis balls (macadamia nuts) - bright yellow-green
-        # self.green_lower = np.array([25, 100, 100])
-        # self.green_upper = np.array([40, 255, 255])
+        # Green tennis balls (macadamia nuts) - bright yellow-green
+        self.green_lower = np.array([25, 100, 100])
+        self.green_upper = np.array([40, 255, 255])
 
         # NEW (white table‑tennis balls: very low saturation, high value)---------------------------------------------------------------------------------
-        self.green_lower = np.array([0, 0, 200])     # H can be anything, S≈0, V high
-        self.green_upper = np.array([180, 30, 255])  # allow a little saturation        
+        # self.green_lower = np.array([0, 0, 200])     # H can be anything, S≈0, V high
+        # self.green_upper = np.array([180, 30, 255])  # allow a little saturation        
         
         # Other ball colors to reject
         self.other_color_ranges = [
