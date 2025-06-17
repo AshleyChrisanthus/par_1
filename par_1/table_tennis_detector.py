@@ -17,9 +17,12 @@ class PingPongBallDetector(Node):
 
         self.bridge = CvBridge()
         self.scan = None
+        self.depth_image = None #+ To store the depth image
 
         # Subscribers
         self.sub_image = self.create_subscription(Image, '/oak/rgb/image_raw', self.image_callback, 10)
+        #+ NEW: Subscribe to the OAK-D depth map
+        self.sub_depth = self.create_subscription(Image, '/oak/depth/image_raw', self.depth_callback, 10)
         self.sub_scan = self.create_subscription(LaserScan, '/scan', self.scan_callback, 10)
 
         # Publishers
@@ -35,14 +38,27 @@ class PingPongBallDetector(Node):
         self.detection_count = 0
         self.frame_count = 0
 
-        # --- NEW DETECTION PARAMETERS ---
-        # These parameters are crucial for filtering and will need to be tuned.
-        self.MIN_CONTOUR_AREA = 100    # Minimum pixel area to be considered a potential ball.
-        self.MAX_CONTOUR_AREA = 5000   # Maximum pixel area. Prevents detecting the white wall.
-        self.MIN_CIRCULARITY = 0.70    # How "circle-like" the contour must be (1.0 is a perfect circle).
+        # --- DETECTION PARAMETERS ---
+        self.MIN_CONTOUR_AREA = 100
+        self.MAX_CONTOUR_AREA = 5000
+        self.MIN_CIRCULARITY = 0.70
+        
+        #+ --- NEW PARAMETERS FOR SIZE VERIFICATION ---
+        self.BALL_REAL_DIAMETER = 0.040  # 40mm in meters
+        #+ IMPORTANT: This must be calibrated for your specific camera! See notes below.
+        self.CAMERA_FOCAL_LENGTH = 840   # A typical value for OAK-D cameras, in pixels.
+        self.SIZE_TOLERANCE = 0.40       # Allow 40% difference between expected and actual size.
 
-        self.get_logger().info('Advanced Ping Pong Ball Detector initialized!')
-        self.get_logger().info('Strategy: Multi-stage contour filtering (Color, Size, Circularity).')
+        self.get_logger().info('Size-Verifying Ping Pong Ball Detector initialized!')
+        self.get_logger().info('Strategy: Contour Filtering + Real-world Size Verification.')
+
+    #+ NEW: Callback to store the latest depth image
+    def depth_callback(self, msg):
+        """Store depth image data. OAK-D depth is usually 16-bit mono (mm)."""
+        try:
+            self.depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')
+        except Exception as e:
+            self.get_logger().error(f'Failed to convert depth image: {e}')
 
 
     def scan_callback(self, msg):
@@ -51,19 +67,20 @@ class PingPongBallDetector(Node):
 
     def image_callback(self, msg):
         """Main image processing callback."""
-        if self.scan is None:
-            self.get_logger().warn('Waiting for LiDAR scan data...')
+        #+ Check for both LiDAR and Depth data before processing
+        if self.scan is None or self.depth_image is None:
+            if self.scan is None: self.get_logger().warn('Waiting for LiDAR scan data...', throttle_duration_sec=5)
+            if self.depth_image is None: self.get_logger().warn('Waiting for Depth image data...', throttle_duration_sec=5)
             return
 
         try:
             self.frame_count += 1
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
-            # Detect balls using the new advanced contour filtering method
-            detected_balls = self.detect_ball_with_contour_filtering(cv_image)
+            #+ Pass the depth image to the detection function
+            detected_balls = self.detect_with_size_verification(cv_image, self.depth_image)
             
             if detected_balls:
-                # This logic now supports finding multiple valid balls in a frame
                 for ball_data in detected_balls:
                     self.process_ping_pong_ball(cv_image, ball_data)
             else:
@@ -73,35 +90,22 @@ class PingPongBallDetector(Node):
         except Exception as e:
             self.get_logger().error(f'Error in ball detection: {str(e)}', exc_info=True)
 
-    # --- COMPLETELY REWRITTEN DETECTION FUNCTION ---
-    def detect_ball_with_contour_filtering(self, cv_image):
-        """
-        Detects the ball using a multi-stage filtering process to eliminate false positives
-        from reflections, other objects, and background walls.
-        """
-        # 1. Create masks for colors of interest
+    # --- UPDATED DETECTION FUNCTION WITH SIZE VERIFICATION ---
+    def detect_with_size_verification(self, cv_image, depth_image):
         hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
         
-        # Mask for the green floor (tuned for typical indoor astroturf)
-        green_lower = np.array([30, 40, 40])
-        green_upper = np.array([90, 255, 255])
+        # Masks for floor and white objects
+        green_lower = np.array([30, 40, 40]); green_upper = np.array([90, 255, 255])
+        white_lower = np.array([0, 0, 180]); white_upper = np.array([180, 70, 255])
         floor_mask = cv2.inRange(hsv, green_lower, green_upper)
-        
-        # Mask for white objects. In HSV, white has low Saturation and high Value.
-        white_lower = np.array([0, 0, 180])
-        white_upper = np.array([180, 70, 255])
         white_mask = cv2.inRange(hsv, white_lower, white_upper)
-
-        # 2. Combine masks: Find things that are WHITE and NOT on the GREEN FLOOR.
-        #    The `~` inverts the floor_mask (we want where the floor ISN'T).
+        
         target_mask = cv2.bitwise_and(white_mask, ~floor_mask)
-
-        # 3. Clean the final mask to remove small noise.
+        
         kernel = np.ones((5, 5), np.uint8)
         target_mask = cv2.morphologyEx(target_mask, cv2.MORPH_OPEN, kernel)
         target_mask = cv2.morphologyEx(target_mask, cv2.MORPH_CLOSE, kernel)
 
-        # 4. Find all contours in our clean target mask.
         contours, _ = cv2.findContours(target_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         valid_balls = []
@@ -109,37 +113,55 @@ class PingPongBallDetector(Node):
             return None
 
         for c in contours:
-            # 5. Apply filters to each contour
-            
-            # Filter 1: Area Filter
+            # --- STAGE 1: Basic Contour Filtering ---
             area = cv2.contourArea(c)
             if not (self.MIN_CONTOUR_AREA < area < self.MAX_CONTOUR_AREA):
-                continue # Skip this contour, it's too small (noise) or too big (wall)
+                continue
 
-            # Filter 2: Circularity Filter
             perimeter = cv2.arcLength(c, True)
-            if perimeter == 0:
-                continue # Avoid division by zero
-            
+            if perimeter == 0: continue
             circularity = 4 * np.pi * (area / (perimeter * perimeter))
             if circularity < self.MIN_CIRCULARITY:
-                continue # Skip this contour, it's not shaped like a circle
-            
-            # If a contour passes all filters, it's a valid ball
-            # Get the center of the contour
-            M = cv2.moments(c)
-            if M["m00"] == 0:
                 continue
+            
+            M = cv2.moments(c)
+            if M["m00"] == 0: continue
             center_x = int(M["m10"] / M["m00"])
             center_y = int(M["m01"] / M["m00"])
+
+            # --- STAGE 2: Real-world Size Verification ---
+            # Get distance from depth map at the contour's center
+            # OAK-D depth is in mm, so convert to meters
+            distance_mm = depth_image[center_y, center_x]
+            if distance_mm == 0:
+                continue # No valid depth reading at this point
             
+            distance_m = distance_mm / 1000.0
+
+            # Calculate the expected pixel diameter of the ball at this distance
+            # Formula: pixel_diameter = (focal_length * real_diameter) / distance
+            expected_diameter_px = (self.CAMERA_FOCAL_LENGTH * self.BALL_REAL_DIAMETER) / distance_m
+
+            # Get the actual pixel diameter of the detected contour
+            _, _, actual_diameter_px, _ = cv2.boundingRect(c)
+            
+            # Compare actual vs. expected size
+            lower_bound = expected_diameter_px * (1 - self.SIZE_TOLERANCE)
+            upper_bound = expected_diameter_px * (1 + self.SIZE_TOLERANCE)
+
+            if not (lower_bound < actual_diameter_px < upper_bound):
+                # self.get_logger().info(f"Rejected contour: actual_size={actual_diameter_px}px, expected_size={expected_diameter_px:.1f}px @ {distance_m:.2f}m")
+                continue # Size doesn't match, this is a false positive
+
+            # If it passes all checks, it's a confirmed ball!
             valid_balls.append({'center_x': center_x, 'center_y': center_y, 'area': area})
         
         return valid_balls if valid_balls else None
 
 
+    # The rest of the file remains the same, as it correctly handles coordinate transforms and publishing
     def process_ping_pong_ball(self, cv_image, ball_data):
-        """Processes a single detected ball."""
+        # ... (no changes needed)
         center_x = ball_data['center_x']
         center_y = ball_data['center_y']
         
@@ -149,7 +171,7 @@ class PingPongBallDetector(Node):
             lidar_x, lidar_y, map_x, map_y = world_coords
             
             self.detection_count += 1
-            self.get_logger().info('PING PONG BALL DETECTED!')
+            self.get_logger().info('PING PONG BALL DETECTED & VERIFIED!')
             self.get_logger().info(f'  Detection #{self.detection_count}:')
             self.get_logger().info(f'  Pixel coordinates: ({int(center_x)}, {int(center_y)})')
             self.get_logger().info(f'  LiDAR coordinates: ({lidar_x:.2f}, {lidar_y:.2f}) meters')
@@ -166,7 +188,7 @@ class PingPongBallDetector(Node):
             self.transform_and_publish(point_lidar)
 
     def get_world_coordinates(self, center_x, image_width):
-        """Convert pixel coordinates to world coordinates."""
+        # ... (no changes needed)
         try:
             normalized_x = center_x / image_width
             angle = self.scan.angle_min + normalized_x * (self.scan.angle_max - self.scan.angle_min)
@@ -193,7 +215,7 @@ class PingPongBallDetector(Node):
             return None
 
     def transform_to_map(self, point_lidar):
-        """Transform point from LiDAR frame to map frame."""
+        # ... (no changes needed)
         try:
             timeout = rclpy.duration.Duration(seconds=0.1)
             transform = self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout)
@@ -204,14 +226,14 @@ class PingPongBallDetector(Node):
             return None
 
     def is_new_ball(self, new_point, threshold=0.3):
-        """Check if this is a new ball or previously detected. Threshold is in meters."""
+        # ... (no changes needed)
         for point in self.detected_points:
             if np.hypot(new_point.point.x - point.point.x, new_point.point.y - point.point.y) < threshold:
                 return False
         return True
 
     def transform_and_publish(self, point_lidar):
-        """Transform to map frame and publish marker if new ball."""
+        # ... (no changes needed)
         try:
             timeout = rclpy.duration.Duration(seconds=0.1)
             transform = self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout)
@@ -231,7 +253,7 @@ class PingPongBallDetector(Node):
             self.get_logger().error(f'TF exception during publish: {e}')
 
     def publish_marker(self, point_map):
-        """Publish marker for RViz visualization."""
+        # ... (no changes needed)
         marker = Marker()
         marker.header.frame_id = 'map'
         marker.header.stamp = self.get_clock().now().to_msg()
@@ -252,6 +274,7 @@ class PingPongBallDetector(Node):
         self.marker_pub.publish(marker)
 
 def main(args=None):
+    # ... (no changes needed)
     rclpy.init(args=args)
     detector = None
     try:
