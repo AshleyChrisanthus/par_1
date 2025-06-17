@@ -33,6 +33,11 @@ class TableTennisBallDetector(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
+        # Detection tracking
+        self.detected_points = []  # Store detected table tennis ball positions
+        self.detection_count = 0
+        self.frame_count = 0
+        
         # Subscribers
         self.image_sub = self.create_subscription(
             CompressedImage, '/oak/rgb/image_rect/compressed', self.image_callback, 10)
@@ -46,6 +51,7 @@ class TableTennisBallDetector(Node):
         self.debug_image_pub = self.create_publisher(Image, '~/debug_image', 10)
         
         self.get_logger().info('Table Tennis Ball Detector (Yellow-Green) has started.')
+        self.get_logger().info('Multiple balls per frame supported - duplicates will be ignored')
 
     def info_callback(self, msg):
         if self.camera_intrinsics is None:
@@ -60,11 +66,47 @@ class TableTennisBallDetector(Node):
         if self.latest_depth_image is None or self.camera_intrinsics is None: 
             return
 
-        # Convert compressed image to OpenCV format
-        cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, 'bgr8')
-        if cv_image.shape[:2] != self.latest_depth_image.shape[:2]: 
-            return
-        
+        try:
+            self.frame_count += 1
+            
+            # Convert compressed image to OpenCV format
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, 'bgr8')
+            if cv_image.shape[:2] != self.latest_depth_image.shape[:2]: 
+                return
+
+            # Detect ALL yellow-green table tennis balls in current frame
+            detected_balls = self.detect_all_table_tennis_balls(cv_image)
+            
+            if detected_balls:
+                self.get_logger().info(f'Found {len(detected_balls)} yellow-green ball(s) in frame #{self.frame_count}')
+                
+                # Process each detected ball
+                new_balls_found = 0
+                for i, ball_data in enumerate(detected_balls):
+                    self.get_logger().info(f'Processing ball {i+1}/{len(detected_balls)}:')
+                    if self.process_table_tennis_ball(cv_image, msg, ball_data, i+1):
+                        new_balls_found += 1
+                
+                if new_balls_found > 0:
+                    self.get_logger().info(f'=== SUMMARY: {new_balls_found} NEW ball(s) added, {len(detected_balls) - new_balls_found} duplicate(s) ignored ===')
+                else:
+                    self.get_logger().info('=== SUMMARY: All balls were previously detected - no new balls added ===')
+                    
+                # Create visualization with all detected balls
+                self.create_debug_visualization(cv_image, detected_balls)
+            else:
+                # Log scanning status occasionally
+                if self.frame_count % 120 == 0:  # Every ~4 seconds
+                    self.get_logger().info('Scanning for yellow-green table tennis balls...')
+                    
+                # Publish empty debug image
+                self.debug_image_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, 'bgr8'))
+                
+        except Exception as e:
+            self.get_logger().error(f'Error in table tennis ball detection: {str(e)}')
+
+    def detect_all_table_tennis_balls(self, cv_image):
+        """Detect ALL yellow-green table tennis balls in the frame."""
         # Convert to HSV for color detection
         hsv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
         
@@ -82,8 +124,7 @@ class TableTennisBallDetector(Node):
         # Find columns that contain yellow-green pixels
         cols_with_yellow_green = np.where(yellow_green_mask.max(axis=0) > 0)[0]
         if cols_with_yellow_green.size == 0: 
-            self.debug_image_pub.publish(self.bridge.cv2_to_imgmsg(cv_image, 'bgr8'))
-            return
+            return []
         
         # Find top and bottom edges of yellow-green regions
         top_indices = np.argmax(yellow_green_mask, axis=0)[cols_with_yellow_green]
@@ -168,19 +209,67 @@ class TableTennisBallDetector(Node):
                 h_full = (y_bot_match + h_bot_match) - y_top
                 
                 avg_depth_ball = (avg_depth_top + avg_depth_bottom) / 2.0
-                detected_balls.append({
+                ball_area = w_full * h_full
+                
+                ball_data = {
                     'rect': (x_full, y_full, w_full, h_full), 
-                    'depth': avg_depth_ball
-                })
+                    'depth': avg_depth_ball,
+                    'center_x': x_full + w_full / 2,
+                    'center_y': y_full + h_full / 2,
+                    'area': ball_area
+                }
+                detected_balls.append(ball_data)
                 available_bottom_edges.pop(best_match_idx)
         
-        if not detected_balls: 
-            return
+        # Sort by depth (nearest first) for consistent processing order
+        detected_balls.sort(key=lambda x: x['depth'])
         
-        # Find the nearest ball
-        nearest_ball = min(detected_balls, key=lambda c: c['depth'])
+        return detected_balls
 
-        # --- 3D Calculation and Publishing ---
+    def process_table_tennis_ball(self, cv_image, msg, ball_data, ball_number):
+        """Process detected table tennis ball with detailed logging."""
+        center_x = ball_data['center_x']
+        center_y = ball_data['center_y']
+        area = ball_data['area']
+        depth_mm = ball_data['depth']
+        
+        # Calculate 3D position
+        point_in_map_frame = self.calculate_3d_position(ball_data, msg)
+        
+        if point_in_map_frame:
+            # Check if this is a new ball
+            if self.is_new_ball(point_in_map_frame):
+                # This is a NEW ball - log and process it
+                self.detection_count += 1
+                
+                self.get_logger().info(f'  ✓ TABLE TENNIS BALL #{ball_number} - NEW DETECTION!')
+                self.get_logger().info(f'    Detection ID: #{self.detection_count}')
+                self.get_logger().info(f'    Pixel coords: ({int(center_x)}, {int(center_y)})')
+                self.get_logger().info(f'    Camera coords: ({point_in_map_frame.point.x:.2f}, {point_in_map_frame.point.y:.2f}) meters')
+                self.get_logger().info(f'    Map coords: ({point_in_map_frame.point.x:.2f}, {point_in_map_frame.point.y:.2f}) meters')
+                self.get_logger().info(f'    Ball area: {int(area)}px²')
+                self.get_logger().info(f'    Depth: {depth_mm/1000.0:.2f}m')
+                
+                # Add to detected points and publish
+                self.detected_points.append(point_in_map_frame)
+                self.ball_pos_pub.publish(point_in_map_frame)
+                self.get_logger().info(f'    Published ball position #{len(self.detected_points)}')
+                
+                return True  # New ball found
+            else:
+                # This is a DUPLICATE ball
+                self.get_logger().info(f'  ✗ Ball #{ball_number} - DUPLICATE (already detected)')
+                self.get_logger().info(f'    Pixel coords: ({int(center_x)}, {int(center_y)})')
+                self.get_logger().info(f'    Map coords: ({point_in_map_frame.point.x:.2f}, {point_in_map_frame.point.y:.2f}) meters')
+                self.get_logger().info(f'    Ignoring duplicate detection')
+                
+                return False  # Duplicate ball
+        else:
+            self.get_logger().warn(f'  ! Ball #{ball_number} - Could not calculate 3D position')
+            return False
+
+    def calculate_3d_position(self, ball_data, msg):
+        """Calculate 3D position of the ball."""
         target_frame = 'map'
         source_frame = 'oak_rgb_camera_optical_frame'
         
@@ -188,15 +277,13 @@ class TableTennisBallDetector(Node):
         try:
             when = rclpy.time.Time()
             if not self.tf_buffer.can_transform(target_frame, source_frame, when, timeout=rclpy.duration.Duration(seconds=0.1)):
-                self.get_logger().warn(f"Waiting for transform from '{source_frame}' to '{target_frame}'...", throttle_duration_sec=1.0)
-                return
-        except tf2_ros.TransformException as e:
-            self.get_logger().warn(f"can_transform failed: {e}")
-            return
+                return None
+        except tf2_ros.TransformException:
+            return None
         
-        # Calculate 3D position and publish
-        rect = nearest_ball['rect']
-        depth_mm = nearest_ball['depth']
+        # Calculate 3D position
+        rect = ball_data['rect']
+        depth_mm = ball_data['depth']
         fx = self.camera_intrinsics.k[0]
         fy = self.camera_intrinsics.k[4]
         cx = self.camera_intrinsics.k[2]
@@ -217,18 +304,36 @@ class TableTennisBallDetector(Node):
 
         try:
             point_in_map_frame = self.tf_buffer.transform(point_in_camera_frame, target_frame)
-            self.ball_pos_pub.publish(point_in_map_frame)
-            self.get_logger().info(f'Published nearest table tennis ball at map coordinates: x={point_in_map_frame.point.x:.2f}, y={point_in_map_frame.point.y:.2f}')
-        except tf2_ros.TransformException as e:
-            self.get_logger().warn(f"Could not transform point: {e}")
-        
-        # --- Visualization ---
+            return point_in_map_frame
+        except tf2_ros.TransformException:
+            return None
+
+    def is_new_ball(self, new_point, threshold=0.3):
+        """Check if this is a new ball or previously detected."""
+        for point in self.detected_points:
+            dx = new_point.point.x - point.point.x
+            dy = new_point.point.y - point.point.y
+            distance = np.hypot(dx, dy)
+            if distance < threshold:
+                return False
+        return True
+
+    def create_debug_visualization(self, cv_image, detected_balls):
+        """Create debug visualization with all detected balls."""
         debug_image = cv_image.copy()
-        x, y, w, h = nearest_ball['rect']
-        avg_depth_m = nearest_ball['depth'] / 1000.0
-        label = f"Tennis Ball @ {avg_depth_m:.2f}m"
-        cv2.rectangle(debug_image, (x, y), (x + w, y + h), (0, 255, 255), 3)  # Yellow rectangle
-        cv2.putText(debug_image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+        
+        for i, ball_data in enumerate(detected_balls):
+            x, y, w, h = ball_data['rect']
+            depth_m = ball_data['depth'] / 1000.0
+            
+            # Use different colors for new vs duplicate balls
+            # For simplicity, just use yellow for all detected balls
+            color = (0, 255, 255)  # Yellow
+            label = f"Ball {i+1} @ {depth_m:.2f}m"
+            
+            cv2.rectangle(debug_image, (x, y), (x + w, y + h), color, 3)
+            cv2.putText(debug_image, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        
         self.debug_image_pub.publish(self.bridge.cv2_to_imgmsg(debug_image, 'bgr8'))
         cv2.imshow("Table Tennis Ball Detection", debug_image)
         cv2.waitKey(1)
