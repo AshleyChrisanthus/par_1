@@ -187,59 +187,18 @@ class TennisBallDetector(Node):
         world_coords = self.get_world_coordinates(center_x, cv_image.shape[1])
         
         if world_coords:
-            lidar_x, lidar_y, map_x, map_y = world_coords
+            lidar_x, lidar_y = world_coords
             
-            # Build point for duplicate checking
-            point_lidar = PointStamped()
-            point_lidar.header.frame_id = self.scan.header.frame_id
-            point_lidar.header.stamp = self.scan.header.stamp
-            point_lidar.point.x = lidar_x
-            point_lidar.point.y = lidar_y
-            point_lidar.point.z = 0.0
+            # Build point for transformation
+            point_laser = PointStamped()
+            point_laser.header.frame_id = self.scan.header.frame_id
+            point_laser.header.stamp = self.scan.header.stamp
+            point_laser.point.x = lidar_x
+            point_laser.point.y = lidar_y
+            point_laser.point.z = 0.0
 
-            # Transform to map coordinates for duplicate checking
-            map_coords_full = self.transform_to_map(point_lidar)
-            if map_coords_full:
-                point_map = PointStamped()
-                point_map.header.frame_id = 'map'
-                point_map.header.stamp = self.scan.header.stamp
-                point_map.point.x = map_coords_full[0]
-                point_map.point.y = map_coords_full[1]
-                point_map.point.z = 0.0
-                
-                # Check if this is a new ball
-                if self.is_new_ball(point_map):
-                    # This is a NEW ball - log and process it
-                    self.detection_count += 1
-                    
-                    self.get_logger().info(f'  ✓ MACADAMIA NUT #{ball_number} - NEW DETECTION!')
-                    self.get_logger().info(f'    Detection ID: #{self.detection_count}')
-                    self.get_logger().info(f'    Pixel coords: ({int(center_x)}, {int(center_y)})')
-                    self.get_logger().info(f'    LiDAR coords: ({lidar_x:.2f}, {lidar_y:.2f}) meters')
-                    self.get_logger().info(f'    Map coords: ({map_coords_full[0]:.2f}, {map_coords_full[1]:.2f}) meters')
-                    self.get_logger().info(f'    Ball area: {area}px²')
-                    
-                    # Add to detected points and publish marker
-                    self.detected_points.append(point_map)
-                    self.publish_marker(point_map)
-                    self.get_logger().info(f'    Published marker #{len(self.detected_points)} in RViz')
-                    
-                    # Trigger home after detection (optional - might want to disable for multiple balls)
-                    # self.home_trigger_pub.publish(Empty())
-                    # self.get_logger().info('    Triggered home return sequence')
-                    
-                    return True  # New ball found
-                else:
-                    # This is a DUPLICATE ball
-                    self.get_logger().info(f'  ✗ Ball #{ball_number} - DUPLICATE (already detected)')
-                    self.get_logger().info(f'    Pixel coords: ({int(center_x)}, {int(center_y)})')
-                    self.get_logger().info(f'    Map coords: ({map_coords_full[0]:.2f}, {map_coords_full[1]:.2f}) meters')
-                    self.get_logger().info(f'    Ignoring duplicate detection')
-                    
-                    return False  # Duplicate ball
-            else:
-                self.get_logger().warn(f'  ! Ball #{ball_number} - Could not transform to map coordinates')
-                return False
+            # Transform and check if new ball using your working method
+            return self.transform_and_publish_ball(ball_number, point_laser, center_x, center_y, area)
         else:
             self.get_logger().warn(f'  ! Ball #{ball_number} - Could not get world coordinates')
             return False
@@ -268,42 +227,54 @@ class TennisBallDetector(Node):
             lidar_x = distance * np.cos(angle)
             lidar_y = distance * np.sin(angle)
             
-            # Build point in LiDAR frame
-            point_lidar = PointStamped()
-            point_lidar.header.frame_id = self.scan.header.frame_id
-            point_lidar.header.stamp = self.scan.header.stamp
-            point_lidar.point.x = lidar_x
-            point_lidar.point.y = lidar_y
-            point_lidar.point.z = 0.0
-            
-            # Transform to map coordinates
-            map_coords = self.transform_to_map(point_lidar)
-            if map_coords:
-                map_x, map_y = map_coords
-                return (lidar_x, lidar_y, map_x, map_y)
-            else:
-                return (lidar_x, lidar_y, None, None)
+            return (lidar_x, lidar_y)
                 
         except Exception as e:
             self.get_logger().error(f'Error getting world coordinates: {str(e)}')
             return None
 
-    def transform_to_map(self, point_lidar):
-        """Transform point from LiDAR frame to map frame."""
+    def transform_and_publish_ball(self, ball_number, point_laser, center_x, center_y, area):
+        """Transform ball to map frame and publish marker if new ball using your working method."""
         try:
-            timeout = rclpy.duration.Duration(seconds=0.1)
-            if self.tf_buffer.can_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout):
-                point_map = tf2_geometry_msgs.do_transform_point(
-                    point_lidar,
-                    self.tf_buffer.lookup_transform('map', point_lidar.header.frame_id, rclpy.time.Time(), timeout=timeout)
-                )
-                return (point_map.point.x, point_map.point.y)
+            if self.tf_buffer.can_transform('map', point_laser.header.frame_id, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)):
+                point_map = self.tf_buffer.transform(point_laser, 'map', timeout=rclpy.duration.Duration(seconds=0.1))
+                
+                # Check if this is a new ball
+                if self.is_new_ball(point_map):
+                    # This is a NEW ball - log and process it
+                    self.detection_count += 1
+                    
+                    self.get_logger().info(f'  ✓ MACADAMIA NUT #{ball_number} - NEW DETECTION!')
+                    self.get_logger().info(f'    Detection ID: #{self.detection_count}')
+                    self.get_logger().info(f'    Pixel coords: ({int(center_x)}, {int(center_y)})')
+                    self.get_logger().info(f'    LiDAR coords: ({point_laser.point.x:.2f}, {point_laser.point.y:.2f}) meters')
+                    self.get_logger().info(f'    Map coords: ({point_map.point.x:.2f}, {point_map.point.y:.2f}) meters')
+                    self.get_logger().info(f'    Ball area: {area}px²')
+                    
+                    # Add to detected points and publish marker
+                    self.detected_points.append(point_map)
+                    self.publish_marker(point_map)
+                    self.get_logger().info(f'    Published marker #{len(self.detected_points)} in RViz')
+                    
+                    # Trigger home after detection (optional - might want to disable for multiple balls)
+                    # self.home_trigger_pub.publish(Empty())
+                    # self.get_logger().info('    Triggered home return sequence')
+                    
+                    return True  # New ball found
+                else:
+                    # This is a DUPLICATE ball
+                    self.get_logger().info(f'  ✗ Ball #{ball_number} - DUPLICATE (already detected)')
+                    self.get_logger().info(f'    Pixel coords: ({int(center_x)}, {int(center_y)})')
+                    self.get_logger().info(f'    Map coords: ({point_map.point.x:.2f}, {point_map.point.y:.2f}) meters')
+                    self.get_logger().info(f'    Ignoring duplicate detection')
+                    
+                    return False  # Duplicate ball
             else:
-                self.get_logger().warn('TF transform not ready')
-                return None
-        except Exception as e:
-            self.get_logger().error(f'TF exception: {e}')
-            return None
+                self.get_logger().warn(f'Transform to map frame not ready for ball #{ball_number}.')
+                return False
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+            self.get_logger().error(f'TF error for ball #{ball_number}: {e}')
+            return False
 
     def is_new_ball(self, new_point, threshold=0.3):
         """Check if this is a new ball or previously detected."""
