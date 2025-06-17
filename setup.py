@@ -48,6 +48,8 @@ setup(
             'table_tennis_detector = par_1.table_tennis_detector:main', 
             'nav2_mission_planner_home = par_1.nav2_mission_planner_home:main',
             'path_recorder_navigator = par_1.path_recorder_navigator:main',
+            'path_rec = par_1.path_rec:main',
+            'rev_waypoint = par_1.rev_waypoint:main',            
         ],
     },
 )
