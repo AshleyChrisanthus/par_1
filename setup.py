@@ -50,7 +50,7 @@ setup(
             'path_recorder_navigator = par_1.path_recorder_navigator:main',
             'path_rec = par_1.path_rec:main',
             'rev_waypoint = par_1.rev_waypoint:main',  
-            'path_recorder_navigator = par_1.path_recorder_navigator:main',
+            # 'path_recorder_navigator = par_1.path_recorder_navigator:main',
         ],
     },
 )
