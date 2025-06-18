@@ -11,7 +11,7 @@ import numpy as np
 import tf2_ros
 import tf2_geometry_msgs
 
-class HybridTennisNoTransBallDetector(Node):
+class HybridTennisBallDetectorNoTransform(Node):
     def __init__(self):
         super().__init__('hybrid_tennis_ball_detector_no_transform')
         
@@ -352,7 +352,7 @@ def main(args=None):
     rclpy.init(args=args)
     
     try:
-        detector = HybridTennisNoTransBallDetector()
+        detector = HybridTennisBallDetectorNoTransform()
         detector.get_logger().info('Starting hybrid tennis ball detector...')
         detector.get_logger().info('GREEN tennis balls will be processed as macadamia nuts')
         detector.get_logger().info('TRANSFORM DISABLED - All positions in camera frame')
