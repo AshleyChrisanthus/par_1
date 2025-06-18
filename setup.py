@@ -52,6 +52,7 @@ setup(
             'rev_waypoint = par_1.rev_waypoint:main',  
             # 'path_recorder_navigator = par_1.path_recorder_navigator:main',
             'table_tennis_ball_detector = par_1.table_tennis_ball_detector:main',  # based on Akshay's tree detection
+            'hybrid_tennis_ball_detector = par_1.hybrid_tennis_ball_detector:main',  # detection from Ash, depth and dist from Aks
         ],
     },
 )
