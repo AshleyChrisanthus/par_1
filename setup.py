@@ -53,6 +53,7 @@ setup(
             # 'path_recorder_navigator = par_1.path_recorder_navigator:main',
             'table_tennis_ball_detector = par_1.table_tennis_ball_detector:main',  # based on Akshay's tree detection
             'hybrid_tennis_ball_detector = par_1.hybrid_tennis_ball_detector:main',  # detection from Ash, depth and dist from Aks
+            'hybrid_tennis_ball_detector_no_transform = par_1.hybrid_tennis_ball_detector_no_transform:main',  # detection from Ash, depth and dist from Aks, no transformation
         ],
     },
 )
