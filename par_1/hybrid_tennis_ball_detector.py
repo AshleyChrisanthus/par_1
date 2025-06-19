@@ -127,7 +127,8 @@ class HybridTennisBallDetector(Node):
             self.ball_pos_pub.publish(point_in_map_frame)
             self.publish_marker(point_in_map_frame)
 
-    def calculate_3d_position(self, ball_data, msg):
+    # def calculate_3d_position(self, ball_data, msg):
+    def calculate_3d_position(self, timestamp, ball_data):
         target_frame = 'map'
         # Check this with: ros2 run tf2_tools view_frames
         source_frame = 'oak_camera_rgb_camera_optical_frame' 
