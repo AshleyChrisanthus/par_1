@@ -46,7 +46,7 @@ setup(
             # 'mission_planner_node_update = par_1.mission_planner_node_update:main',
             'tennis_ball_marker = par_1.tennis_ball_marker:main',
             'table_tennis_detector = par_1.table_tennis_detector:main', 
-            'nav2_mission_planner_home = par_1.nav2_mission_planner_home:main',
+            # 'nav2_mission_planner_home = par_1.nav2_mission_planner_home:main',
             'path_recorder_navigator = par_1.path_recorder_navigator:main',
             'path_rec = par_1.path_rec:main',
             'rev_waypoint = par_1.rev_waypoint:main',  
@@ -54,6 +54,7 @@ setup(
             'table_tennis_ball_detector = par_1.table_tennis_ball_detector:main',  # based on Akshay's tree detection
             'hybrid_tennis_ball_detector = par_1.hybrid_tennis_ball_detector:main',  # detection from Ash, depth and dist from Aks
             'hybrid_tennis_ball_detector_no_transform = par_1.hybrid_tennis_ball_detector_no_transform:main',  # detection from Ash, depth and dist from Aks, no transformation
+            'nav2_mission_planner_avoidance = par_1.nav2_mission_planner_avoidance:main',
         ],
     },
 )
