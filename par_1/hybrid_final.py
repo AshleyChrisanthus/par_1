@@ -30,7 +30,7 @@ class HybridFinal(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         
-        self.declare_parameter('camera_frame', 'oak_rgb_camera_optical_frame')
+        self.declare_parameter('camera_frame', 'oak_camera_rgb_camera_optical_frame')
         self.source_frame = self.get_parameter('camera_frame').get_parameter_value().string_value
         
         self.detected_points = []
