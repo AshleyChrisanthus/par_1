@@ -57,6 +57,7 @@ setup(
             'nav2_mission_planner_avoidance = par_1.nav2_mission_planner_avoidance:main',
             'obstacle_manager = par_1.obstacle_manager:main',
             'hybrid_final = par_1.hybrid_final:main'  # detection + aks transformation logic - hopefuly works
+            'combined_tennis_ball_detector = par_1.combined_tennis_ball_detector:main',
         ],
     },
 )
