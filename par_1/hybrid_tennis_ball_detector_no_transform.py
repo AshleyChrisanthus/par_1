@@ -140,45 +140,101 @@ class HybridTennisBallDetector(Node):
         except Exception:
             return None
 
+    # def process_tennis_ball(self, msg, ball_data, ball_number):
+    #     """Calculates 3D position, transforms to map frame, and publishes if new."""
+    #     # Step 1: Calculate 3D position in the camera's frame
+    #     point_in_camera_frame = self.calculate_3d_position_camera_frame(ball_data, msg)
+    #     if not point_in_camera_frame:
+    #         return False
+
+    #     # --- REQUIREMENT 2 & 3: Transform point to map frame with error handling ---
+    #     try:
+    #         # This function uses the timestamp in point_in_camera_frame.header.stamp
+    #         # to get the transform at the correct time, solving time mismatch issues.
+    #         point_in_map_frame = self.tf_buffer.transform(
+    #             point_in_camera_frame,
+    #             self.target_frame,
+    #             timeout=Duration(seconds=0.2) # Don't wait too long for transform
+    #         )
+    #         self.get_logger().debug(f'Ball #{ball_number}: Successfully transformed to "{self.target_frame}" frame.')
+    #     except (tf2_ros.TransformException) as ex:
+    #         self.get_logger().warn(f'Could not transform point for ball #{ball_number}: {ex}')
+    #         return False
+
+    #     # Step 2: Check if this is a new ball (using map frame coordinates)
+    #     if self.is_new_ball(point_in_map_frame):
+    #         self.detection_count += 1
+    #         self.get_logger().info(f'  ✓ NEW DETECTION! Total: {self.detection_count}')
+
+    #         self.get_logger().info(f'    Distance from Camera: {point_in_camera_frame.point.z:.3f}m')
+            
+    #         map_x = point_in_map_frame.point.x
+    #         map_y = point_in_map_frame.point.y
+    #         self.get_logger().info(f'    Map Coords: X={map_x:.3f}m, Y={map_y:.3f}m')
+            
+    #         # Step 3: Add to detected points list (in map frame) and publish
+    #         self.detected_points.append(point_in_map_frame)
+    #         self.ball_pos_pub.publish(point_in_map_frame)
+    #         self.publish_marker(point_in_map_frame)
+    #         return True
+    #     else:
+    #         self.get_logger().debug(f'  ✗ Ball #{ball_number}: DUPLICATE of a known ball. Ignoring.')
+    #         return False
+
     def process_tennis_ball(self, msg, ball_data, ball_number):
-        """Calculates 3D position, transforms to map frame, and publishes if new."""
+        """Calculates 3D position, logs it, transforms to map frame, and publishes if new."""
+        
+        # --- LOGGING FOR POTENTIAL BALLS ---
+        self.get_logger().info(f'  > Processing potential ball #{ball_number}:')
+        
         # Step 1: Calculate 3D position in the camera's frame
         point_in_camera_frame = self.calculate_3d_position_camera_frame(ball_data, msg)
         if not point_in_camera_frame:
+            self.get_logger().warn("    Could not calculate 3D position in camera frame.")
             return False
 
-        # --- REQUIREMENT 2 & 3: Transform point to map frame with error handling ---
+        # Log the camera-frame coordinates for EVERY potential ball
+        cam_x = point_in_camera_frame.point.x
+        cam_y = point_in_camera_frame.point.y
+        cam_z = point_in_camera_frame.point.z # This is the distance from the camera
+        self.get_logger().info(f'    Camera Frame Coords (Potential): X={cam_x:.3f}m, Y={cam_y:.3f}m, Z={cam_z:.3f}m')
+        
+        # Step 2: Transform point to map frame with error handling
         try:
-            # This function uses the timestamp in point_in_camera_frame.header.stamp
-            # to get the transform at the correct time, solving time mismatch issues.
             point_in_map_frame = self.tf_buffer.transform(
                 point_in_camera_frame,
                 self.target_frame,
-                timeout=Duration(seconds=0.2) # Don't wait too long for transform
+                timeout=Duration(seconds=0.2)
             )
-            self.get_logger().debug(f'Ball #{ball_number}: Successfully transformed to "{self.target_frame}" frame.')
+            self.get_logger().debug(f'    Transform to "{self.target_frame}" frame successful.')
         except (tf2_ros.TransformException) as ex:
-            self.get_logger().warn(f'Could not transform point for ball #{ball_number}: {ex}')
+            # This is the error you were seeing. It will now happen AFTER the potential coords are logged.
+            self.get_logger().warn(f'    Could not transform to map frame: {ex}')
             return False
 
-        # Step 2: Check if this is a new ball (using map frame coordinates)
+        # Step 3: Check if this is a new ball (using map frame coordinates)
         if self.is_new_ball(point_in_map_frame):
             self.detection_count += 1
-            self.get_logger().info(f'  ✓ NEW DETECTION! Total: {self.detection_count}')
             
+            # --- LOGGING FOR CONFIRMED NEW BALLS ---
+            self.get_logger().info(f'  ✓ CONFIRMED NEW DETECTION! Total: {self.detection_count}')
+            
+            # Log the final map-frame coordinates
             map_x = point_in_map_frame.point.x
             map_y = point_in_map_frame.point.y
-            self.get_logger().info(f'    Map Coords: X={map_x:.3f}m, Y={map_y:.3f}m')
+            map_z = point_in_map_frame.point.z
+            self.get_logger().info(f'    Map Coords (Final): X={map_x:.3f}m, Y={map_y:.3f}m, Z={map_z:.3f}m')
             
-            # Step 3: Add to detected points list (in map frame) and publish
+            # Step 4: Add to detected points list (in map frame) and publish
             self.detected_points.append(point_in_map_frame)
             self.ball_pos_pub.publish(point_in_map_frame)
             self.publish_marker(point_in_map_frame)
             return True
         else:
-            self.get_logger().debug(f'  ✗ Ball #{ball_number}: DUPLICATE of a known ball. Ignoring.')
+            self.get_logger().info(f'  ✗ DUPLICATE of a known ball. Ignoring.')
             return False
 
+    
     def calculate_3d_position_camera_frame(self, ball_data, msg):
         x, y, w, h = ball_data['bbox']
         depth_mm = ball_data['depth']
