@@ -144,7 +144,8 @@ class HybridTennisBallDetector(Node):
 
         point_in_camera_frame = PointStamped()
         # point_in_camera_frame.header.stamp = msg.header.stamp
-        point_in_camera_frame.header.stamp = timestamp 
+        # point_in_camera_frame.header.stamp = timestamp
+        point_in_camera_frame.header.stamp = rclpy.time.Time().to_msg()
         point_in_camera_frame.header.frame_id = source_frame
         point_in_camera_frame.point = Point(x=x_cam, y=y_cam, z=z_cam)
 
