@@ -61,6 +61,10 @@ class HybridTennisBallDetector(Node):
         if self.latest_depth_image is None or self.camera_intrinsics is None: 
             return
 
+        # --- NEW: Get the current time as soon as the message is received ---
+        # This will be used to overwrite the bad timestamp from the camera.
+        now = self.get_clock().now().to_msg()
+
         try:
             cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, 'bgr8')
             # The detect function now filters by distance automatically
@@ -68,7 +72,8 @@ class HybridTennisBallDetector(Node):
             
             if green_balls:
                 for ball_data in green_balls:
-                    self.process_tennis_ball(msg, ball_data)
+                    # self.process_tennis_ball(msg, ball_data)
+                    self.process_tennis_ball(now, ball_data)
                 self.create_debug_visualization(cv_image, green_balls)
 
         except Exception as e:
@@ -110,12 +115,13 @@ class HybridTennisBallDetector(Node):
             return None
 
     def process_tennis_ball(self, msg, ball_data):
-        point_in_map_frame = self.calculate_3d_position(ball_data, msg)
-        
+        # point_in_map_frame = self.calculate_3d_position(ball_data, msg)
+        point_in_map_frame = self.calculate_3d_position(timestamp, ball_data)
+
         if point_in_map_frame and self.is_new_ball(point_in_map_frame):
             self.detection_count += 1
             self.get_logger().info(f'✓ CONFIRMED NEW DETECTION! Total: {self.detection_count}')
-            self.get_logger().info(f'  Map Coords: X={point_in_map_frame.point.x:.2f}, Y={point_in_map_frame.point.y:.2f}')
+            self.get_logger().info(f'  Map Coords: X={point_in_map_frame.point.x:.2f}, Y={point_in_map_frame.point.y:.2f}, Z={point_in_map_frame.point.z:.2f} ')
             
             self.detected_points.append(point_in_map_frame)
             self.ball_pos_pub.publish(point_in_map_frame)
@@ -136,7 +142,8 @@ class HybridTennisBallDetector(Node):
         x_cam, y_cam, z_cam = (pixel_x - cx) * depth_m / fx, (pixel_y - cy) * depth_m / fy, depth_m
 
         point_in_camera_frame = PointStamped()
-        point_in_camera_frame.header.stamp = msg.header.stamp
+        # point_in_camera_frame.header.stamp = msg.header.stamp
+        point_in_camera_frame.header.stamp = timestamp 
         point_in_camera_frame.header.frame_id = source_frame
         point_in_camera_frame.point = Point(x=x_cam, y=y_cam, z=z_cam)
 
