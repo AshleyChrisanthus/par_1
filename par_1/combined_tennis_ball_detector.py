@@ -71,7 +71,7 @@ class CombinedTennisBallDetector(Node):
         self.tf_buffer = Buffer(cache_time=rclpy.duration.Duration(seconds=10.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.source_frame = 'oak_rgb_camera_optical_frame'
+        self.source_frame = 'oak_camera_rgb_camera_optical_frame'
         self.target_frame = 'map'
         self.get_logger().info(f'Source frame: {self.source_frame}, Target frame: {self.target_frame}')
 
