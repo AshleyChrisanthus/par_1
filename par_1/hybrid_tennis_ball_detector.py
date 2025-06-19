@@ -114,7 +114,7 @@ class HybridTennisBallDetector(Node):
         except Exception:
             return None
 
-    def process_tennis_ball(self, msg, ball_data):
+    def process_tennis_ball(self, timestamp, ball_data):
         # point_in_map_frame = self.calculate_3d_position(ball_data, msg)
         point_in_map_frame = self.calculate_3d_position(timestamp, ball_data)
 
@@ -160,12 +160,23 @@ class HybridTennisBallDetector(Node):
             return None
 
     def is_new_ball(self, new_point, threshold=0.3):
-        for point in self.detected_points:
-            dist = np.hypot(new_point.point.x - point.point.x, new_point.point.y - point.point.y)
-            if dist < threshold:
-                return False
-        return True
+        # for point in self.detected_points:
+        #     dist = np.hypot(new_point.point.x - point.point.x, new_point.point.y - point.point.y)
+        #     if dist < threshold:
+        #         return False
+        # return True
 
+        for point in self.detected_points:
+            # Calculate the 3D distance between the new point and the known point
+            dx = new_point.point.x - point.point.x
+            dy = new_point.point.y - point.point.y
+            dz = new_point.point.z - point.point.z
+            dist = np.sqrt(dx*dx + dy*dy + dz*dz) # Full 3D distance
+            
+            if dist < threshold:
+                return False # It's a duplicate
+        return True # It's a new ball
+    
     def publish_marker(self, point_map):
         marker = Marker()
         marker.header.frame_id = 'map'
