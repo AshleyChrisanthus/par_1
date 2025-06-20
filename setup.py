@@ -60,6 +60,7 @@ setup(
             'combined_tennis_ball_detector = par_1.combined_tennis_ball_detector:main',
             'correct_ball_detector = par_1.correct_ball_detector:main',   # correct ball detector 
             'new_table_tennis_detector = par_1.new_table_tennis_detector:main',
+            'cylinder_detector = par_1.horizontal_cylinder_detector:main',
         ],
     },
 )
