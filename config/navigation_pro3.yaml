@@ -132,7 +132,7 @@ local_costmap:
         dynamic_obstacles:
           topic: /dynamic_obstacles
           max_obstacle_height: 2.0
-          data_type: "PointCloud2"
+          data_type: "PointCloud"
           marking: true
           # Set clearing to false so balls remain as permanent obstacles
           clearing: false
@@ -185,7 +185,7 @@ global_costmap:
         dynamic_obstacles:
           topic: /dynamic_obstacles
           max_obstacle_height: 2.0
-          data_type: "PointCloud2"
+          data_type: "PointCloud"
           marking: true
           # Set clearing to false so balls remain as permanent obstacles
           clearing: false
