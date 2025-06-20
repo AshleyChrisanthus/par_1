@@ -61,8 +61,8 @@ setup(
             'correct_ball_detector = par_1.correct_ball_detector:main',   # correct ball detector 
             'new_table_tennis_detector = par_1.new_table_tennis_detector:main',
             'cylinder_detector = par_1.horizontal_cylinder_detector:main',
-            'path_recorder = par_1.path_recorder:main',
-            'reverse_waypoint_follower = par_1.reverse_waypoint_follower:main',
+            'path_rec = par_1.path_rec:main',
+            'rev_waypoint = par_1.rev_waypoint:main',
         ],
     },
 )
