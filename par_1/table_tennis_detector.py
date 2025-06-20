@@ -163,7 +163,7 @@ class TennisBallDetector(Node):
 
         point_in_camera_frame = PointStamped()
         point_in_camera_frame.header.stamp = header_stamp
-        point_in_camera_frame.header.frame_id = 'oak_rgb_camera_optical_frame'
+        point_in_camera_frame.header.frame_id = 'oak_camera_rgb_camera_optical_frame'
         point_in_camera_frame.point = Point(x=x_cam, y=y_cam, z=z_cam)
         
         return {'contour': contour, 'point_camera': point_in_camera_frame}
