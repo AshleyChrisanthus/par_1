@@ -26,7 +26,7 @@ def generate_launch_description():
     # This node will be started after a delay.
     cylinder_detector_node = Node(
         package='par_1',
-        executable='cylinder_detector.py',      # timed_mission
+        executable='horizontal_cylinder_detector.py',      # timed_mission
         name='horizontal_cylinder_detector_stabilized_fix',
         output='screen'
     )
