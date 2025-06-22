@@ -18,12 +18,12 @@ class Nav2MissionPlanner(Node):
         # --- Waypoints: (x, y, yaw_degrees) ---
         self.waypoints: List[Tuple[float, float, float]] = [
 
-            # (1.8, 0.0,   0),  # P1
-            # (1.8, 0.8,  90),  # P2
-            # (0.0, 0.8, 90),   # P3
-            # (0.0, 1.8, -90),  # P4 
-            # (1.8, 1.8, -90),  # P5
-            # (0.0, 0.0, -90),  # P6 (HOME) 
+            (1.8, 0.0,   0),  # P1
+            (1.8, 0.8,  90),  # P2
+            (0.0, 0.8, 90),   # P3
+            (0.0, 1.8, -90),  # P4 
+            (1.8, 1.8, -90),  # P5
+            (0.0, 0.0, -90),  # P6 (HOME) 
         ]
 
         self.nav_action = ActionClient(self, NavigateToPose, 'navigate_to_pose')
